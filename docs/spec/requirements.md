@@ -5,7 +5,7 @@
 | Product | Gantry |
 | Version covered | 0.1.x (rapid development) |
 | Status | Draft for review |
-| Related | [Design](design.md), [Test plan](test-plan.md), [File format](../compose-spec.md), [Design decisions](../../DECISIONS.md) |
+| Related | [Design](design.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
 ## 1. Purpose
 
@@ -262,8 +262,8 @@ spent waiting on DHCP servers or healthchecks.
 * Docker cannot join a namespace by path through its API, hence the shim.
 * Stock kiri 0.2 does not support `ns:<path>`; the patch in `contrib/kiri` is
   required.
-* Assumptions recorded in [DECISIONS.md](../../DECISIONS.md) (opt-in
-  firewall, no address allocation, unshared PID namespace) apply.
+* The design assumptions apply: opt-in firewall, no address allocation,
+  unshared PID namespace.
 
 ## 8. Acceptance criteria
 

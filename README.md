@@ -255,8 +255,7 @@ scripts/package.sh                                 # Debian package
 ```
 
 See [docs/compose-spec.md](docs/compose-spec.md) for the file format,
-[docs/](docs/README.md) for requirements, design, test plan and runbooks,
-and [DECISIONS.md](DECISIONS.md) for design choices.
+and [docs/](docs/README.md) for requirements, design, test plan and runbooks.
 
 ## License
 

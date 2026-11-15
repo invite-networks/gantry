@@ -5,7 +5,7 @@
 | Product | Gantry |
 | Version covered | 0.1.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
-| Related | [Requirements](requirements.md), [Test plan](test-plan.md), [File format](../compose-spec.md), [Design decisions](../../DECISIONS.md) |
+| Related | [Requirements](requirements.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
 Requirement IDs in brackets, such as [FR-POD-01], point to the
 [requirements](requirements.md).

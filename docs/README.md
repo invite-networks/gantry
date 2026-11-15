@@ -5,11 +5,10 @@
 | [spec/](spec/README.md) | Requirements (SRS), design (SDD) and test plan | Draft for review |
 | [runbooks/](runbooks/README.md) | Install, operation, recovery, upgrade | Draft, partly validated |
 | [compose-spec.md](compose-spec.md) | The project file format | Current |
-| [DECISIONS.md](../DECISIONS.md) | Design decisions and open assumptions (serves as the decision log) | Current |
 
 The INVITE documentation baseline also calls for `uml/`, `adr/`, `dev/` and
 `guides/`. They are not written yet. Until then, the diagrams live in the
-[design](spec/design.md), decisions in [DECISIONS.md](../DECISIONS.md),
+[design](spec/design.md),
 developer setup in the [README](../README.md#development) and the user guide
 in the [README](../README.md) and [compose-spec.md](compose-spec.md).
 
