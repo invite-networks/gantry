@@ -14,6 +14,7 @@ WorkingDirectory=/etc/gantry/%i
 ExecStart=/usr/bin/env gantry up -d --wait
 ExecStop=/usr/bin/env gantry down
 TimeoutStartSec=600
+SyslogIdentifier=gantry-%i
 
 [Install]
 WantedBy=multi-user.target
