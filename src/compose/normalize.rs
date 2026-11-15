@@ -448,6 +448,15 @@ fn network(name: &str, n: raw::Network, warnings: &mut Vec<String>) -> Result<Ne
             k => return Err(Error::config(format!("network {name}: unknown key {k:?}"))),
         }
     }
+    if let Some(d) = n
+        .driver
+        .as_deref()
+        .filter(|d| !matches!(*d, "macvlan" | "ipvlan"))
+    {
+        return Err(Error::config(format!(
+            "network {name}: driver {d:?} is not supported; pods attach directly to the LAN with macvlan or ipvlan"
+        )));
+    }
     let mut opts: IndexMap<String, String> = n
         .driver_opts
         .into_iter()
@@ -1418,5 +1427,118 @@ fn check_cycles(services: &IndexMap<String, Service>) -> Result<()> {
 fn finish(project: &mut Project) {
     for s in project.services.values_mut() {
         s.labels.shift_remove(RUNTIME_EXPLICIT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::compose::{LoadOptions, load};
+    use crate::project::*;
+
+    fn try_load(yaml: &str) -> crate::Result<Project> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("compose.yaml"), yaml).unwrap();
+        load(&LoadOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        })
+        .map(|l| l.project)
+    }
+
+    const NET: &str = "networks:\n  lan: { driver: macvlan, parent: eth9, ipam: { config: [{ subnet: 192.0.2.0/24, gateway: 192.0.2.1 }] } }\n";
+
+    #[test]
+    fn implicit_pod_from_service_networks() {
+        let p = try_load(&format!(
+            "name: t\n{NET}services:\n  web:\n    image: nginx\n    hostname: www\n    mac_address: 02:00:00:00:00:01\n    networks:\n      lan: {{ ipv4_address: 192.0.2.5 }}\n"
+        ))
+        .unwrap();
+        let pod = &p.pods["web"];
+        assert!(pod.implicit);
+        assert_eq!(pod.hostname, "www");
+        assert_eq!(
+            pod.attachments[0].addressing,
+            Addressing::Static(vec!["192.0.2.5/24".parse().unwrap()])
+        );
+        assert_eq!(pod.attachments[0].mac, Some([2, 0, 0, 0, 0, 1]));
+        assert!(pod.attachments[0].default_route);
+        assert_eq!(p.services["web"].container_name, "t-web-1");
+    }
+
+    #[test]
+    fn network_mode_service_joins_pod() {
+        let p = try_load(&format!(
+            "name: t\n{NET}services:\n  a:\n    image: x\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n  b:\n    image: y\n    network_mode: service:a\n"
+        ))
+        .unwrap();
+        assert_eq!(p.services["b"].pod, "a");
+        assert!(!p.pods.contains_key("b"));
+    }
+
+    #[test]
+    fn errors_are_helpful() {
+        let cases = [
+            (
+                "name: t\nnetworks:\n  n: { driver: bridge }\nservices: {}\n",
+                "macvlan or ipvlan",
+            ),
+            (
+                &format!("name: t\n{NET}services:\n  a: {{ image: x, networks: [lan] }}\n"),
+                "ipv4_address or dhcp",
+            ),
+            (
+                &format!(
+                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices:\n  a: {{ image: x, pod: p, hostname: h }}\n"
+                ),
+                "belongs to the pod",
+            ),
+            (
+                &format!(
+                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\n  q: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
+                ),
+                "used by pods",
+            ),
+            (
+                "name: t\nservices:\n  a: { image: x, depends_on: [b] }\n  b: { image: y, depends_on: [a] }\n",
+                "cycle",
+            ),
+            (
+                "name: t\nservices:\n  a: { build: . }\n",
+                "build is not supported",
+            ),
+            (
+                "name: t\nbogus: 1\nservices: {}\n",
+                "unsupported top-level key",
+            ),
+            (
+                &format!(
+                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ to: 1.2.3.4 }}] }}\nservices: {{}}\n"
+                ),
+                "use from:",
+            ),
+            (
+                &format!(
+                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ from: pod:nope }}] }}\nservices: {{}}\n"
+                ),
+                "unknown",
+            ),
+            (
+                &format!(
+                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ port: 80, comment: 'a\"b' }}] }}\nservices: {{}}\n"
+                ),
+                "double quotes",
+            ),
+        ];
+        for (yaml, want) in cases {
+            let err = try_load(yaml).unwrap_err().to_string();
+            assert!(err.contains(want), "expected {want:?} in {err:?}");
+        }
+    }
+
+    #[test]
+    fn profiles_filter_services() {
+        let p = try_load("name: t\nservices:\n  a: { image: x, network_mode: none }\n  b: { image: y, network_mode: none, profiles: [debug] }\n").unwrap();
+        assert!(p.services.contains_key("a"));
+        assert!(!p.services.contains_key("b"));
     }
 }
