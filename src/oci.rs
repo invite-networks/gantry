@@ -9,8 +9,9 @@ use serde_json::Value;
 pub const ANN_NETNS: &str = "io.kirisame.netns";
 pub const ANN_UTSNS: &str = "io.kirisame.utsns";
 pub const ANN_IPCNS: &str = "io.kirisame.ipcns";
-/// Optional: the runtime to hand off to (default `runc`).
-pub const ANN_RUNTIME: &str = "io.kirisame.oci-runtime";
+/// Namespace paths must live under these directories, so a container's
+/// annotations cannot point the shim at arbitrary files.
+pub const ALLOWED_NS_DIRS: &[&str] = &["/run/netns/", "/run/kirisame/", "/var/run/netns/"];
 
 /// The subcommand and bundle directory found in a runtime command line.
 #[derive(Debug, PartialEq, Eq)]
@@ -77,9 +78,12 @@ pub fn rewrite_spec(spec: &mut Value, ns_exists: &dyn Fn(&str) -> bool) -> Resul
     }
     for (kind, path) in &targets {
         if let Some(p) = path {
-            if !p.starts_with('/') {
+            let allowed = ALLOWED_NS_DIRS.iter().any(|d| p.starts_with(d))
+                && !p.split('/').any(|c| c == "..");
+            if !allowed {
                 return Err(format!(
-                    "kirisame: {kind} namespace path {p:?} must be absolute"
+                    "kirisame: {kind} namespace path {p:?} is outside {}",
+                    ALLOWED_NS_DIRS.join(", ")
                 ));
             }
             if !ns_exists(p) {
@@ -129,12 +133,6 @@ pub fn rewrite_spec(spec: &mut Value, ns_exists: &dyn Fn(&str) -> bool) -> Resul
         }
     }
     Ok(true)
-}
-
-pub fn handoff_runtime(spec: &Value) -> Option<String> {
-    spec.pointer(&format!("/annotations/{}", ANN_RUNTIME.replace('/', "~1")))
-        .and_then(Value::as_str)
-        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -202,6 +200,14 @@ mod tests {
     fn untouched_without_annotations_and_errors_on_missing_ns() {
         let mut spec = json!({"linux": {"namespaces": []}});
         assert!(!rewrite_spec(&mut spec, &|_| true).unwrap());
+        for bad in ["/etc/shadow", "/run/netns/../../etc/x"] {
+            let mut spec = json!({"annotations": {ANN_NETNS: bad}, "linux": {"namespaces": []}});
+            assert!(
+                rewrite_spec(&mut spec, &|_| true)
+                    .unwrap_err()
+                    .contains("outside")
+            );
+        }
         let mut spec =
             json!({"annotations": {ANN_NETNS: "/run/netns/gone"}, "linux": {"namespaces": []}});
         assert!(

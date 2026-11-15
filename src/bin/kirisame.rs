@@ -1,5 +1,7 @@
 //! The `kirisame` command line.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use clap::{Args, Parser, Subcommand};
 use kirisame::compose::{LoadOptions, load};
 use kirisame::engine::Engine;

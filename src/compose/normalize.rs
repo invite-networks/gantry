@@ -1028,6 +1028,9 @@ fn service(
     let err = |m: String| Error::config(format!("service {name}: {m}"));
     let image = s.image.ok_or_else(|| err("image is required".into()))?;
     let mut labels = list_or_map(s.labels, ctx, false);
+    if let Some(k) = labels.keys().find(|k| k.starts_with("io.kirisame.")) {
+        return Err(err(format!("label {k} is reserved for kirisame")));
+    }
     let runtime = match (ctx.runtime_override, &s.runtime) {
         (Some(r), _) => r,
         (None, Some(r)) => {

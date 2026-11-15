@@ -125,7 +125,14 @@ pub async fn run_agent(cfg: AgentConfig) -> Result<()> {
                 }
             }
         };
-        client.apply(&nl, index, &lease, None).await?;
+        if let Err(e) = client.apply(&nl, index, &lease, None).await {
+            // A transient netlink or file error must not end the agent:
+            // drop this lease attempt and try again shortly.
+            tracing::warn!("applying lease {}: {e}", lease.address);
+            client.unapply(&nl, index, &lease).await;
+            sleep(Duration::from_secs(5)).await;
+            continue;
+        }
         let previous = last_address.replace(lease.address);
         if previous.is_some_and(|p| p != lease.address) {
             // Other pods' hosts files and firewall rules name this address.
@@ -458,7 +465,17 @@ fn server_id(m: &Message) -> Option<Ipv4Addr> {
 fn parse_ack(m: &Message, server: Ipv4Addr) -> Result<Offer> {
     let opts = m.opts();
     let prefix = match opts.get(OptionCode::SubnetMask) {
-        Some(DhcpOption::SubnetMask(mask)) => u32::from(*mask).count_ones() as u8,
+        // Only contiguous masks are meaningful as a prefix length.
+        Some(DhcpOption::SubnetMask(mask))
+            if u32::from(*mask).leading_ones() == u32::from(*mask).count_ones() =>
+        {
+            u32::from(*mask).count_ones() as u8
+        }
+        Some(DhcpOption::SubnetMask(mask)) => {
+            return Err(Error::Dhcp(format!(
+                "server sent a non-contiguous subnet mask {mask}"
+            )));
+        }
         _ => 24,
     };
     let router = match opts.get(OptionCode::Router) {
@@ -488,8 +505,11 @@ fn parse_ack(m: &Message, server: Ipv4Addr) -> Result<Offer> {
         Some(DhcpOption::Rebinding(t)) if *t < lease_secs && *t > t1 => *t,
         _ => lease_secs / 8 * 7,
     };
-    if m.yiaddr().is_unspecified() {
-        return Err(Error::Dhcp("ACK without an address".into()));
+    let y = m.yiaddr();
+    if y.is_unspecified() || y.is_loopback() || y.is_multicast() || y.is_broadcast() {
+        return Err(Error::Dhcp(format!(
+            "server offered an unusable address {y}"
+        )));
     }
     Ok(Offer {
         address: m.yiaddr(),

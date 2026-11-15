@@ -2,6 +2,8 @@
 //! containers to kirisame pod namespaces, then execs the real runtime.
 //! See `kirisame::oci` for the details.
 
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use kirisame::oci;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -10,14 +12,13 @@ use std::process::{Command, ExitCode};
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let inv = oci::parse_invocation(&args);
-    let mut runtime = std::env::var("KIRISAME_OCI_RUNTIME").unwrap_or_else(|_| "runc".into());
+    let runtime = std::env::var("KIRISAME_OCI_RUNTIME").unwrap_or_else(|_| "runc".into());
 
     if matches!(inv.subcommand.as_deref(), Some("create") | Some("run")) {
         let bundle = inv.bundle.clone().unwrap_or_else(|| ".".into());
         let config = Path::new(&bundle).join("config.json");
         match patch(&config) {
-            Ok(Some(r)) => runtime = r,
-            Ok(None) => {}
+            Ok(()) => {}
             Err(e) => {
                 eprintln!("{e}");
                 return ExitCode::from(1);
@@ -30,8 +31,8 @@ fn main() -> ExitCode {
     ExitCode::from(127)
 }
 
-/// Rewrites config.json. Returns the hand-off runtime if the spec names one.
-fn patch(config: &Path) -> Result<Option<String>, String> {
+/// Rewrites config.json in place when the container belongs to a pod.
+fn patch(config: &Path) -> Result<(), String> {
     let text = std::fs::read(config)
         .map_err(|e| format!("kirisame-oci: read {}: {e}", config.display()))?;
     let mut spec: serde_json::Value = serde_json::from_slice(&text)
@@ -46,5 +47,5 @@ fn patch(config: &Path) -> Result<Option<String>, String> {
         std::fs::rename(&tmp, config)
             .map_err(|e| format!("kirisame-oci: replace {}: {e}", config.display()))?;
     }
-    Ok(oci::handoff_runtime(&spec))
+    Ok(())
 }

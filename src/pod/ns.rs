@@ -63,10 +63,19 @@ pub fn ensure_shared_dir(dir: &Path) -> Result<()> {
 /// new namespace (on a short lived thread) before it is pinned, which is
 /// where the UTS hostname is set.
 pub fn create(kind: Kind, path: &Path, init: impl FnOnce() -> Result<()> + Send) -> Result<()> {
-    if path.exists() {
-        return Err(Error::network(format!("{} already exists", path.display())));
-    }
-    File::create(path).ctx(|| format!("create {}", path.display()))?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                Error::network(format!("{} already exists", path.display()))
+            }
+            _ => Error::Io {
+                context: format!("create {}", path.display()),
+                source: e,
+            },
+        })?;
     let result = std::thread::scope(|s| {
         s.spawn(|| -> Result<()> {
             unshare(kind.flag()).ctx(|| format!("unshare {} namespace", kind.proc_name()))?;

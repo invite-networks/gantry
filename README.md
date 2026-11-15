@@ -136,8 +136,9 @@ Docker containers with `--runtime kirisame --network none` and annotations
 naming the pod's namespaces. Docker passes annotations into the OCI spec;
 `kirisame-oci` rewrites the namespace paths in `config.json` (and drops the
 hostname when the UTS namespace is shared) and execs `runc` with the
-original arguments. Set `KIRISAME_OCI_RUNTIME` in dockerd's environment, or
-the `io.kirisame.oci-runtime` annotation, to hand off to another runtime.
+original arguments. Set `KIRISAME_OCI_RUNTIME` in dockerd's environment to
+hand off to another runtime (crun, for example). The shim only accepts namespace paths under
+`/run/netns/` and `/run/kirisame/`.
 
 ### kiri
 

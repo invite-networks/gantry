@@ -1,7 +1,7 @@
 //! Small helpers shared across modules.
 
 use crate::errors::{Context, Result};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 
 /// FNV-1a, 64 bit. Stable across builds, used for config hashes and MACs.
@@ -21,8 +21,27 @@ pub fn hash_hex(data: &[u8]) -> String {
 /// A random hex identifier from the kernel's CSPRNG.
 pub fn random_id(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut buf);
+    let mut filled = 0;
+    while filled < buf.len() {
+        // SAFETY: the pointer and length describe the unfilled tail of buf.
+        let n =
+            unsafe { libc::getrandom(buf[filled..].as_mut_ptr().cast(), buf.len() - filled, 0) };
+        if n > 0 {
+            filled += n as usize;
+        } else if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            // getrandom only fails on ancient kernels; fall back to a
+            // time and pid mix rather than zeros.
+            let seed = format!(
+                "{:?}{}{filled}",
+                std::time::SystemTime::now(),
+                std::process::id()
+            );
+            let h = fnv1a64(seed.as_bytes()).to_le_bytes();
+            for (i, b) in buf[filled..].iter_mut().enumerate() {
+                *b = h[i % 8];
+            }
+            break;
+        }
     }
     buf.iter().map(|b| format!("{b:02x}")).collect()
 }

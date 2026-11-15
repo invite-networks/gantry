@@ -3,6 +3,11 @@
 //! the LAN with macvlan or ipvlan, applies an nftables firewall inside
 //! them, and then starts the pod's containers with Docker, Podman or kiri.
 
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
+
 pub mod compose;
 pub mod errors;
 pub mod firewall;

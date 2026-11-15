@@ -449,13 +449,25 @@ pub async fn remove(project: &str, pod: &str) -> Result<()> {
             }
         }
     }
-    ns::remove(&state::netns_path(project, pod))?;
-    ns::remove(&dir.join("uts"))?;
-    ns::remove(&dir.join("ipc"))?;
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).ctx(|| format!("remove {}", dir.display()))?;
+    // Keep going after a failure so as much as possible is cleaned up,
+    // then report the first error.
+    let mut first: Option<Error> = None;
+    for r in [
+        ns::remove(&state::netns_path(project, pod)),
+        ns::remove(&dir.join("uts")),
+        ns::remove(&dir.join("ipc")),
+    ] {
+        if let Err(e) = r {
+            tracing::warn!(pod, "{e}");
+            first.get_or_insert(e);
+        }
     }
-    Ok(())
+    if first.is_none() && dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dir).ctx(|| format!("remove {}", dir.display())) {
+            first = Some(e);
+        }
+    }
+    first.map_or(Ok(()), Err)
 }
 
 async fn stop_agent(dir: &Path, ifname: &str) {
@@ -479,6 +491,7 @@ async fn stop_agent(dir: &Path, ifname: &str) {
 /// Rewrites every pod's hosts file and reapplies firewalls, now that all
 /// addresses are known. Safe to run any time.
 pub fn refresh(project: &Project) -> Result<()> {
+    let mut first_err: Option<Error> = None;
     let states: Vec<PodState> = project
         .pods
         .keys()
@@ -534,9 +547,12 @@ pub fn refresh(project: &Project) -> Result<()> {
             });
         }
         files::write_if_changed(&dir.join("hosts"), &files::hosts_file(&entries))?;
-        apply_firewall(project, pod, st, &addr_of)?;
+        if let Err(e) = apply_firewall(project, pod, st, &addr_of) {
+            tracing::warn!(pod = %pod.name, "{e}");
+            first_err.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 pub fn apply_firewall(
