@@ -148,6 +148,7 @@ impl Orchestrator {
             }
             states.insert(pod_name.clone(), st);
         }
+        self.project.save_snapshot()?;
         pod::refresh(&self.project)?;
 
         let mut started: Vec<String> = Vec::new();
@@ -431,6 +432,7 @@ impl Orchestrator {
         }
         let dir = state::project_dir(&self.project.name);
         let _ = std::fs::remove_file(dir.join("lock"));
+        let _ = std::fs::remove_file(Project::snapshot_path(&self.project.name));
         let _ = std::fs::remove_dir(dir.join("pods"));
         let _ = std::fs::remove_dir(&dir);
         Ok(())

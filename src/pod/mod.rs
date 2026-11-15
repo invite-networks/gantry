@@ -338,15 +338,21 @@ fn start_dhcp_agent(
         std::fs::File::create(dhcp::log_path(&dir, ifname)).ctx(|| "create dhcp log".into())?;
     let log2 = log.try_clone().ctx(|| "dup dhcp log".into())?;
     let mut cmd = Command::new(exe);
-    cmd.args(["internal", "dhcp-agent", "--netns"])
-        .arg(&st.netns)
-        .arg("--pod-dir")
-        .arg(&dir)
-        .args(["--ifname", ifname, "--hostname", &pod.hostname])
-        .args([
-            "--client-id",
-            &format!("kirisame-{}-{}-{ifname}", project.name, pod.name),
-        ]);
+    cmd.args([
+        "internal",
+        "dhcp-agent",
+        "--project",
+        &project.name,
+        "--netns",
+    ])
+    .arg(&st.netns)
+    .arg("--pod-dir")
+    .arg(&dir)
+    .args(["--ifname", ifname, "--hostname", &pod.hostname])
+    .args([
+        "--client-id",
+        &format!("kirisame-{}-{}-{ifname}", project.name, pod.name),
+    ]);
     if default_route {
         cmd.arg("--default-route");
     }

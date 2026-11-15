@@ -58,6 +58,8 @@ pub fn log_path(pod_dir: &Path, ifname: &str) -> PathBuf {
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
+    /// Project name, used to refresh other pods when the address changes.
+    pub project: String,
     pub pod_dir: PathBuf,
     pub ifname: String,
     pub hostname: String,
@@ -110,6 +112,8 @@ pub async fn run_agent(cfg: AgentConfig) -> Result<()> {
     };
 
     let mut current: Option<Offer> = None;
+    // The first bind happens during `up`, which refreshes the project itself.
+    let mut last_address: Option<Ipv4Addr> = None;
     loop {
         let lease = match current.take() {
             Some(l) => l,
@@ -122,6 +126,11 @@ pub async fn run_agent(cfg: AgentConfig) -> Result<()> {
             }
         };
         client.apply(&nl, index, &lease, None).await?;
+        let previous = last_address.replace(lease.address);
+        if previous.is_some_and(|p| p != lease.address) {
+            // Other pods' hosts files and firewall rules name this address.
+            refresh_project(&cfg.project);
+        }
         tracing::info!(address = %lease.address, prefix = lease.prefix, server = %lease.server, lease = lease.lease_secs, "lease bound");
 
         // Hold the lease: renew at T1, rebind at T2, give up at expiry.
@@ -169,6 +178,17 @@ pub async fn run_agent(cfg: AgentConfig) -> Result<()> {
                 let _ = std::fs::remove_file(LeaseFile::path(&cfg.pod_dir, &cfg.ifname));
             }
         }
+    }
+}
+
+fn refresh_project(project: &str) {
+    match crate::project::Project::load_snapshot(project) {
+        Ok(Some(p)) => match crate::pod::refresh(&p) {
+            Ok(()) => tracing::info!("refreshed hosts files and firewalls after an address change"),
+            Err(e) => tracing::warn!("refresh after address change: {e}"),
+        },
+        Ok(None) => {}
+        Err(e) => tracing::warn!("{e}"),
     }
 }
 

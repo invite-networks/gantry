@@ -200,6 +200,8 @@ enum InternalCmd {
     /// DHCP agent for one pod interface
     DhcpAgent {
         #[arg(long)]
+        project: String,
+        #[arg(long)]
         netns: PathBuf,
         #[arg(long)]
         pod_dir: PathBuf,
@@ -291,6 +293,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     let g = cli.global;
     match cli.command {
         Cmd::Internal(InternalCmd::DhcpAgent {
+            project,
             netns: _,
             pod_dir,
             ifname,
@@ -302,6 +305,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             dns_options,
         }) => {
             let cfg = pod::dhcp::AgentConfig {
+                project,
                 pod_dir,
                 ifname,
                 hostname,

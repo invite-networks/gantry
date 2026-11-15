@@ -169,8 +169,10 @@ Service `ports:` and `expose:` feed the firewall:
   container port (80) and warns.
 * `expose: ["5432"]` opens the port to the project's other pods only.
 
-Rules that name pods are rendered from the addresses known at `up` time.
-Run `kirisame firewall reload` after a DHCP pod's address changes.
+Rules that name pods are rendered from the addresses known at the time. When
+a DHCP pod's address changes, its agent refreshes every pod's hosts file and
+firewall; `kirisame firewall reload` does the same by hand. A deny rule
+whose pod has no address yet is an error rather than being skipped.
 
 ## services
 
