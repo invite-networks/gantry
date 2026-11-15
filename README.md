@@ -149,6 +149,17 @@ namespace (`container:<name>`). The patch in `contrib/kiri` adds Podman's
 namespace; they keep their own UTS and IPC namespaces, and kirisame sets
 the pod hostname on them.
 
+## Running at boot
+
+Pods live under `/run`, so they are gone after a reboot. The unit in
+`contrib/systemd/kirisame@.service` runs `kirisame up -d --wait` for
+`/etc/kirisame/<name>/` at boot and `kirisame down` at shutdown:
+
+```sh
+sudo cp contrib/systemd/kirisame@.service /etc/systemd/system/
+sudo systemctl enable --now kirisame@myproject
+```
+
 ## Things to know
 
 * **The host cannot reach its own macvlan pods** through the parent
