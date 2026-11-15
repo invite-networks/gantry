@@ -4,7 +4,7 @@
 #
 #   sudo GT_PARENT=vlan4 GT_SUBNET=192.0.2.216/29 GT_GATEWAY=192.0.2.222 \
 #        GT_IP1=192.0.2.217 GT_IP2=192.0.2.218 GT_IP3=192.0.2.219 \
-#        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove]
+#        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove] [ipv6]
 #
 # With no arguments it runs docker, podman and dhcp. The dhcp scenario uses
 # an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq.
@@ -114,12 +114,29 @@ dhcpmove() {
   "$here/dhcp-lab.sh" up >/dev/null
 }
 
+ipv6() {
+  echo "== ipv6"
+  ip link show gtdhcp0 >/dev/null 2>&1 || "$here/dhcp-lab.sh" up >/dev/null
+  K="gantry -f $here/ipv6/gantry.yaml"
+  $K down >/dev/null 2>&1
+  if ! $K up -d >/tmp/gt-ipv6-up.log 2>&1; then
+    bad "up"; tail -5 /tmp/gt-ipv6-up.log; return
+  fi
+  check "pod a has fd99::31" sh -c "$K pod exec a ip -6 addr show eth0 | grep -q 'fd99::31/64'"
+  check "hosts file has both families" sh -c "grep -q '^fd99::31[[:space:]]a' /run/gantry/v6/pods/b/hosts && grep -q '^10.99.0.31[[:space:]]a' /run/gantry/v6/pods/b/hosts"
+  check "ping6 by pod name" sh -c "$K exec -T sb ping -6 -c1 -W2 a </dev/null"
+  check "firewall allows b over IPv6" sh -c "$K exec -T sb nc -w3 fd99::31 7000 </dev/null | grep -q v6-ok"
+  check_not "firewall blocks c over IPv6" sh -c "$K exec -T sc nc -w3 fd99::31 7000 </dev/null | grep -q v6-ok"
+  $K down >/dev/null 2>&1
+}
+
 targets=${*:-docker podman dhcp}
 for t in $targets; do
   case $t in
     docker|podman|kiri) e2e "$t" ;;
     dhcp) dhcp ;;
     dhcpmove) dhcpmove ;;
+    ipv6) ipv6 ;;
     *) echo "unknown scenario $t" >&2; exit 2 ;;
   esac
 done

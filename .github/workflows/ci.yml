@@ -16,3 +16,22 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
       - run: cargo install cargo-audit --locked && cargo audit
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Live tests on the runner's Docker and Podman, using the isolated DHCP lab
+  # bridge as the pods' macvlan parent. Not yet run on GitHub's runners.
+  integration:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y dnsmasq-base nftables
+      - run: cargo build --release
+      - run: sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
+      - run: sudo gantry setup docker && sudo gantry setup podman
+      - run: sudo tests/integration/dhcp-lab.sh up
+      - run: >
+          sudo GT_PARENT=gtdhcp0 GT_SUBNET=10.99.0.0/24 GT_GATEWAY=10.99.0.1
+          GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13
+          tests/integration/run.sh docker podman dhcp

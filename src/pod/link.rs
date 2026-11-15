@@ -6,7 +6,7 @@ use crate::errors::{Error, Result};
 use crate::project::{IpvlanMode, MacvlanMode, NetDriver};
 use futures_util::TryStreamExt;
 use ipnet::IpNet;
-use rtnetlink::packet_route::address::AddressAttribute;
+use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags, AddressHeaderFlags};
 use rtnetlink::packet_route::link::{IpVlanMode, LinkAttribute, MacVlanMode};
 use rtnetlink::{Handle, LinkIpVlan, LinkMacVlan, LinkUnspec, RouteMessageBuilder};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -161,13 +161,20 @@ impl Netlink {
     }
 
     pub async fn add_address(&self, index: u32, addr: IpNet) -> Result<()> {
-        match self
+        let mut req = self
             .handle
             .address()
-            .add(index, addr.addr(), addr.prefix_len())
-            .execute()
-            .await
-        {
+            .add(index, addr.addr(), addr.prefix_len());
+        if addr.addr().is_ipv6() {
+            // Skip duplicate address detection, as container engines do:
+            // the address must be usable the moment containers start, and
+            // the operator assigned it explicitly.
+            let m = req.message_mut();
+            m.header.flags |= AddressHeaderFlags::Nodad;
+            m.attributes
+                .push(AddressAttribute::Flags(AddressFlags::Nodad));
+        }
+        match req.execute().await {
             Ok(()) => Ok(()),
             Err(rtnetlink::Error::NetlinkError(e)) if e.raw_code() == -libc::EEXIST => Ok(()),
             Err(e) => Err(Error::network(format!("add address {addr}: {e}"))),
