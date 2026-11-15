@@ -34,10 +34,11 @@ There is no infra or pause container. Gantry pins the namespaces the same
 way `ip netns add` does, and every container joins them by path.
 
 ```
-                 LAN (vlan4, 192.0.2.216/29)
-                   |                        |
-          macvlan 192.0.2.218      macvlan 192.0.2.219
-        +----------+----------+   +---------+---------+
+              LAN (vlan4, 192.0.2.216/29)
+                |                        |
+       macvlan 192.0.2.218       macvlan 192.0.2.219
+                |                        |
+        +-------+-----------------------+---------+-----------+
         | pod web  (netns, uts, ipc,    | pod data            |
         |          nftables)            |                     |
         |  nginx (docker)  <-127.0.0.1->|  redis (podman)     |
