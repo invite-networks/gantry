@@ -131,5 +131,15 @@ pub fn list_projects() -> Vec<String> {
 }
 
 pub fn ensure_dir(p: &Path) -> Result<()> {
-    std::fs::create_dir_all(p).ctx(|| format!("create {}", p.display()))
+    std::fs::create_dir_all(p).ctx(|| format!("create {}", p.display()))?;
+    // The run directory holds project snapshots (environment, build args)
+    // and may hold a private Podman API socket: root only. Files below it
+    // keep their own modes so containers can read their bind mounts.
+    let run = run_dir();
+    if p.starts_with(&run) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))
+            .ctx(|| format!("chmod {}", run.display()))?;
+    }
+    Ok(())
 }

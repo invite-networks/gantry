@@ -23,10 +23,19 @@ pub fn build_args(svc: &Service, project: &str, dockerfile: Option<&str>) -> Vec
     for t in &b.tags {
         push("-t", t.clone());
     }
-    if let Some(f) = dockerfile
-        .map(str::to_string)
-        .or_else(|| b.dockerfile.clone())
-    {
+    // The CLI resolves a relative -f against its working directory;
+    // Compose resolves it against the build context.
+    let file = dockerfile.map(str::to_string).or_else(|| {
+        b.dockerfile.as_ref().map(|f| {
+            let p = std::path::Path::new(f);
+            if p.is_absolute() {
+                f.clone()
+            } else {
+                b.context.join(p).display().to_string()
+            }
+        })
+    });
+    if let Some(f) = file {
         push("-f", f);
     }
     for (k, v) in &b.args {
@@ -83,7 +92,7 @@ impl Engine {
                 let dir = state::run_dir().join("build");
                 state::ensure_dir(&dir)?;
                 let path = dir.join(format!("{project}-{}.Dockerfile", svc.name));
-                crate::util::write_atomic(&path, text.as_bytes())?;
+                crate::util::write_private(&path, text.as_bytes())?;
                 Some(path)
             }
             None => None,
@@ -129,5 +138,37 @@ impl Engine {
                 svc.name, svc.image
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compose::{LoadOptions, load};
+
+    #[test]
+    fn dockerfile_resolves_against_context() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("compose.yaml"),
+            "name: b\nservices:\n  a:\n    build: { context: ./app, dockerfile: Dockerfile.prod, args: { V: \"1\" } }\n    network_mode: none\n",
+        )
+        .unwrap();
+        let p = load(&LoadOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap()
+        .project;
+        let a = build_args(&p.services["a"], "b", None);
+        let ctx = dir.path().join("app");
+        let f = a.iter().position(|x| x == "-f").unwrap();
+        assert_eq!(a[f + 1], ctx.join("Dockerfile.prod").display().to_string());
+        assert!(a.contains(&"V=1".to_string()));
+        assert_eq!(a.last().unwrap(), &ctx.display().to_string());
+        // An inline Dockerfile path wins.
+        let a = build_args(&p.services["a"], "b", Some("/run/x.Dockerfile"));
+        let f = a.iter().position(|x| x == "-f").unwrap();
+        assert_eq!(a[f + 1], "/run/x.Dockerfile");
     }
 }

@@ -45,7 +45,12 @@ impl Orchestrator {
             .or_insert_with(|| Engine::new(project.runtime));
         let all = [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri]
             .into_iter()
-            .map(|k| engines.get(&k).cloned().unwrap_or_else(|| Engine::new(k)))
+            .map(|k| {
+                engines
+                    .get(&k)
+                    .cloned()
+                    .unwrap_or_else(|| Engine::passive(k))
+            })
             .collect();
         Self {
             project,
@@ -303,11 +308,8 @@ impl Orchestrator {
                 crate::util::random_id(3)
             )
         });
-        let code = e.run_attached(&name, body, req.tty, req.interactive).await;
-        if rm {
-            let _ = e.remove(&name).await;
-        }
-        code
+        e.run_attached(&name, body, req.tty, req.interactive, rm)
+            .await
     }
 
     /// Sends a signal to the selected services' containers.
@@ -315,6 +317,9 @@ impl Orchestrator {
         let order = self.selected(services)?;
         try_join_all(order.iter().map(|name| async move {
             let svc = &self.project.services[name];
+            if self.owned(svc).await?.is_none() {
+                return Ok(());
+            }
             println!("Killing {}", svc.container_name);
             self.engine(svc.runtime)
                 .kill(&svc.container_name, signal)
@@ -334,7 +339,7 @@ impl Orchestrator {
         try_join_all(order.iter().map(|name| async move {
             let svc = &self.project.services[name];
             let e = self.engine(svc.runtime);
-            match e.inspect(&svc.container_name).await? {
+            match self.owned(svc).await? {
                 Some(c) if c.status == "running" => {
                     println!("{} is running; stop it first or pass --stop", c.name);
                     Ok::<(), Error>(())
@@ -348,6 +353,23 @@ impl Orchestrator {
         }))
         .await?;
         Ok(())
+    }
+
+    /// The service's container, if one exists under its name. A container
+    /// with that name that belongs to something else is an error: Gantry
+    /// never stops or removes what it did not create.
+    pub async fn owned(&self, svc: &Service) -> Result<Option<ContainerInfo>> {
+        match self
+            .engine(svc.runtime)
+            .inspect(&svc.container_name)
+            .await?
+        {
+            Some(c) if c.project != self.project.name => Err(Error::State(format!(
+                "container name {} is taken by a container that is not part of project {} (project label {:?}); remove it or set container_name",
+                svc.container_name, self.project.name, c.project
+            ))),
+            other => Ok(other),
+        }
     }
 
     /// The named services, or all of them, checked to exist.
@@ -486,7 +508,7 @@ impl Orchestrator {
             other.remove(&c.name).await?;
         }
 
-        if let Some(c) = e.inspect(&svc.container_name).await? {
+        if let Some(c) = self.owned(svc).await? {
             if c.hash == want && !force {
                 if c.status != "running" {
                     println!("Starting {}", svc.container_name);
@@ -527,7 +549,7 @@ impl Orchestrator {
         let mut announced = false;
         let mut last_check = None::<tokio::time::Instant>;
         loop {
-            let info = e.inspect(&svc.container_name).await?;
+            let info = self.owned(svc).await?;
             let ok = match (&info, cond) {
                 (None, _) => false,
                 (Some(c), DependsCondition::ServiceStarted) => {
@@ -669,7 +691,8 @@ impl Orchestrator {
             try_join_all(level.iter().map(|name| async move {
                 let svc = &self.project.services[name];
                 let e = self.engine(svc.runtime);
-                if e.inspect(&svc.container_name)
+                if self
+                    .owned(svc)
                     .await?
                     .is_some_and(|c| c.status == "running")
                 {
@@ -704,7 +727,7 @@ impl Orchestrator {
             .filter(|s| pod::ns::is_pinned(&s.netns))
             .ok_or_else(|| Error::State(format!("pod {} is not up; run `gantry up`", svc.pod)))?;
         let e = self.engine(svc.runtime);
-        match e.inspect(&svc.container_name).await? {
+        match self.owned(svc).await? {
             Some(c) if c.pod_id != st.id => Err(Error::State(format!(
                 "{} belongs to an older pod; run `gantry up`",
                 c.name

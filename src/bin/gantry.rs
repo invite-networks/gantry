@@ -606,7 +606,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Version => {
             println!("gantry {}", env!("CARGO_PKG_VERSION"));
             for kind in [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri] {
-                let e = Engine::new(kind);
+                let e = Engine::passive(kind);
                 match e.version().await {
                     Ok(v) => println!("{kind}: {v}"),
                     Err(_) => println!("{kind}: not available"),

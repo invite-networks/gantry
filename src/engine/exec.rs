@@ -246,16 +246,26 @@ impl Engine {
     }
 
     /// Creates a one-off container, attaches to it, starts it, and returns
-    /// its exit code once it ends.
+    /// its exit code once it ends. With `rm`, the container is removed
+    /// afterwards, but only if this call created it.
     pub async fn run_attached(
         &self,
         name: &str,
         body: ContainerCreateBody,
         tty: bool,
         interactive: bool,
+        rm: bool,
     ) -> Result<i64> {
-        let d = self.api().await?.clone();
         self.create(name, body).await?;
+        let code = self.attach_and_wait(name, tty, interactive).await;
+        if rm {
+            let _ = self.remove(name).await;
+        }
+        code
+    }
+
+    async fn attach_and_wait(&self, name: &str, tty: bool, interactive: bool) -> Result<i64> {
+        let d = self.api().await?.clone();
         let attached = d
             .attach_container(
                 name,

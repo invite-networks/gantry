@@ -67,6 +67,9 @@ pub struct Engine {
     pub kind: RuntimeKind,
     host: String,
     client: Arc<OnceCell<Client>>,
+    /// Start Podman's API service when its socket is down. Off for engines
+    /// a project does not use, so looking never starts anything.
+    autostart: bool,
 }
 
 /// A container as reported by `inspect`.
@@ -74,6 +77,9 @@ pub struct Engine {
 pub struct ContainerInfo {
     pub id: String,
     pub name: String,
+    /// The `io.gantry.project` label; empty for containers Gantry did not
+    /// create.
+    pub project: String,
     pub service: String,
     pub pod: String,
     pub pod_id: String,
@@ -119,6 +125,15 @@ impl Engine {
             kind,
             host: default_host(kind),
             client: Arc::new(OnceCell::new()),
+            autostart: true,
+        }
+    }
+
+    /// An engine that only connects to a socket that is already up.
+    pub fn passive(kind: RuntimeKind) -> Self {
+        Self {
+            autostart: false,
+            ..Self::new(kind)
         }
     }
 
@@ -149,7 +164,13 @@ impl Engine {
         let mut socket = socket_path(&self.host);
         if !socket_alive(&socket).await {
             socket = match self.kind {
-                RuntimeKind::Podman => start_podman_service(&socket).await?,
+                RuntimeKind::Podman if self.autostart => start_podman_service(&socket).await?,
+                RuntimeKind::Podman => {
+                    return Err(Error::engine(format!(
+                        "podman: no API service at {}",
+                        socket.display()
+                    )));
+                }
                 RuntimeKind::Docker => {
                     return Err(Error::engine(format!(
                         "docker: cannot reach {}; is dockerd running?",
@@ -491,6 +512,7 @@ fn container_info(c: &ContainerInspectResponse) -> ContainerInfo {
             .unwrap_or("")
             .trim_start_matches('/')
             .to_string(),
+        project: label(LABEL_PROJECT),
         service: label(LABEL_SERVICE),
         pod: label(LABEL_POD),
         pod_id: label(LABEL_POD_ID),

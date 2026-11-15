@@ -62,7 +62,11 @@ impl Project {
 
     pub fn save_snapshot(&self) -> crate::Result<()> {
         let data = serde_json::to_vec(self).map_err(|e| crate::Error::State(e.to_string()))?;
-        crate::util::write_atomic(&Self::snapshot_path(&self.name), &data)
+        let path = Self::snapshot_path(&self.name);
+        if let Some(dir) = path.parent() {
+            crate::pod::state::ensure_dir(dir)?;
+        }
+        crate::util::write_private(&path, &data)
     }
 
     pub fn load_snapshot(name: &str) -> crate::Result<Option<Self>> {

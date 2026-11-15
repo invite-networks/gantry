@@ -48,9 +48,25 @@ pub fn random_id(bytes: usize) -> String {
 
 /// Writes a file atomically: write to a sibling temp file, then rename.
 pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    write_atomic_mode(path, data, 0o644)
+}
+
+/// Like [`write_atomic`], readable by root only.
+pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+    write_atomic_mode(path, data, 0o600)
+}
+
+fn write_atomic_mode(path: &Path, data: &[u8], mode: u32) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     {
-        let mut f = std::fs::File::create(&tmp).ctx(|| format!("create {}", tmp.display()))?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(mode)
+            .open(&tmp)
+            .ctx(|| format!("create {}", tmp.display()))?;
         f.write_all(data)
             .ctx(|| format!("write {}", tmp.display()))?;
         f.sync_all().ctx(|| format!("sync {}", tmp.display()))?;
