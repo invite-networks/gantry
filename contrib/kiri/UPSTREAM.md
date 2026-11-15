@@ -17,11 +17,11 @@ signed.
 | Open an issue first for anything larger than a small fix, and wait for agreement (CONTRIBUTING, feature form) | Part 1 drafted. Not opened. |
 | One change per pull request (CONTRIBUTING, PR template) | Network, UTS and IPC `ns:` modes combined into one commit, `414a5bc` on branch `pr-ns-path` on the test host. The earlier two-commit branch is kept. |
 | Small and fast: no new dependency, background process or startup time (CONTRIBUTING) | No new dependencies, no new process. The default path (no `ns:` mode) runs the same code as before. |
-| Speed check: main versus the change, `scripts/perf.py` limits (CONTRIBUTING) | Runs automatically on the pull request. Not run locally: it cross-builds both versions in containers. |
-| Every feature ships on macOS, Windows and Linux together, built and tested on each; no OS gate (CONTRIBUTING) | **Open.** The code has no OS gate, but it was only built and tested on Linux. On macOS and Windows the path refers to Kiri's Linux VM. Raised as a question in the issue. Needs a macOS run (your Mac) and a Windows machine before the PR. |
-| `python3 scripts/ui-test.py` passes (CONTRIBUTING) | The change has no window or UI. It runs in CI on every PR. **Not run locally.** |
-| `cargo fmt`, `cargo clippy` and the tests pass (CONTRIBUTING, PR template) | Lines the change adds or edits are rustfmt-clean (stable rustfmt 1.11). Upstream `main` itself is not: `cargo fmt --check` reports hundreds of diffs in untouched files, so the change does not reformat them (one change per PR). Clippy reports no new warnings. Unit tests: 6 new, all pass; the 6 failures also fail on `main` (unprivileged test run). `tests/e2e.sh`: identical results on `main` and the change. See Part 2. |
-| Tests run before submitting (CONTRIBUTING: `cargo test`, `tests/e2e.sh`) | Done on Linux: `main` and the final commit `414a5bc` compared, identical e2e results. |
+| Speed check: main versus the change, `scripts/perf.py` limits (CONTRIBUTING) | Run on GitHub with Kiri's own `perf-run.sh`: **within the limits** (numbers in Part 2). It runs again automatically on the pull request. |
+| Every feature ships on macOS, Windows and Linux together, built and tested on each; no OS gate (CONTRIBUTING) | No OS gate. **Linux:** tested end to end on a host and on a clean GitHub runner. **macOS (Apple silicon):** built with `cargo xtask` and tested end to end on a real Mac, paths inside Kiri's VM. **Windows:** the engine there is the same static Linux `kiri`/`kiri-init` in WSL 2, built and tested as that static build on GitHub; `kiri-win.exe` does not depend on the changed crates and builds and passes its tests on `windows-latest`. **Open:** an end-to-end run on Windows (GitHub's Windows runners cannot run WSL 2), so the issue asks the maintainers what they want there. |
+| `python3 scripts/ui-test.py` passes (CONTRIBUTING) | The change has no window or UI. It runs in Kiri's CI on every PR. **Not run here.** |
+| `cargo fmt`, `cargo clippy` and the tests pass (CONTRIBUTING, PR template) | Lines the change adds or edits are rustfmt-clean (stable rustfmt 1.11). Upstream `main` itself is not: `cargo fmt --check` reports hundreds of diffs in untouched files, so the change does not reformat them (one change per PR). Clippy reports no new warnings. Unit tests: 6 new; run as root on GitHub, every test passes on both sides (the 6 failures on the lab host came from running unprivileged). `tests/e2e.sh`: identical results on `main` and the change. See Part 2. |
+| Tests run before submitting (CONTRIBUTING: `cargo test`, `tests/e2e.sh`) | Done on Linux (host and GitHub) and macOS (Apple silicon), `main` and the final commit `414a5bc` compared each time. No new failures anywhere. |
 | `scripts/ci/notices.sh` after dependency changes (CONTRIBUTING) | Not applicable: no dependency changes. |
 | Sign your commits (CONTRIBUTING) | **Needs you.** The commit is unsigned. Re-sign with your key before pushing (`git commit --amend -S --no-edit`). |
 | Contributor License Agreement with Canestack Labs via CLA Assistant (CONTRIBUTING, CLA.md) | **Needs you.** Section 3 asks you to confirm you may grant the licence (employer rights) and that the contribution is your original work. See the AI note below. |
@@ -29,7 +29,7 @@ signed.
 | At most 3 open pull requests (CONTRIBUTING, PR template) | **Check** your open PRs on the repo before opening. |
 | Disclose AI tools used (PR template) | Drafted as "yes". **Edit to match what you want to state.** |
 | How you found it (PR template) | "I use Kiri and ran into this myself". |
-| Tested on (PR template) | Linux (Debian 13, kernel 6.12, x86_64). macOS and Windows pending. |
+| Tested on (PR template) | Linux (Debian 13; Ubuntu 24.04 on GitHub), macOS 27 on Apple silicon, Windows (client build and tests only). |
 | Code of Conduct: professional, respectful, no one's private information | Drafts name no people and contain no addresses, host names, internal IPs or emails. Commit author is the GitHub noreply address. |
 | SECURITY.md: vulnerabilities go through private reporting, not public issues | Nothing here is a vulnerability in released Kiri. The FIFO hang was in this unreleased patch and is fixed. The issue discusses the feature's security properties openly, which is normal design discussion. If a maintainer considers joining arbitrary namespaces a security concern, move that discussion to private reporting. |
 
@@ -40,8 +40,13 @@ signed.
    naming it is your call.
 2. **AI disclosure wording** and the CLA's "original work" statement.
 3. **Which account and fork** opens the PR (personal or invite-networks).
-4. **macOS and Windows testing** before the PR (the issue asks the
-   maintainers what they need first).
+4. **Windows end to end.** Everything else is tested. A Windows 10 or 11
+   machine with WSL 2 (or an Azure VM with nested virtualization) would
+   close it; the issue asks the maintainers whether they need it first.
+
+Test runs: private repo `invite-networks/kiri-pr-testing` (branches
+`upstream-main`, `pr-ns-path`, and `ci` with the workflow), plus the
+Apple silicon runs on the local Mac.
 
 ---
 
@@ -82,17 +87,19 @@ Accept Podman's `ns:<absolute path>` form for `HostConfig.NetworkMode`,
   policies land in the same namespaces.
 - Other modes behave as before.
 
-I have a working implementation on Linux (about 400 lines with tests,
-mostly in the agent's container setup and the daemon's create path, no new
-dependencies). Before opening a pull request I'd like to agree on two
-things:
+I have a working implementation (about 400 lines with tests, mostly in the
+agent's container setup and the daemon's create path, no new dependencies),
+tested on Linux and on macOS (Apple silicon). Before opening a pull request
+I'd like to agree on two things:
 
 1. **macOS and Windows.** There, containers run in Kiri's Linux VM, so the
-   path would name a namespace inside the VM, the same as Podman machine or
-   Docker Desktop. The code has no OS gate, but nothing in the VM creates
-   such namespaces for users today, so it is mainly useful on Linux hosts.
-   Is that acceptable under "every feature ships on all three systems", and
-   what testing would you want on macOS and Windows?
+   path names a namespace inside the VM, the same as Podman machine or
+   Docker Desktop. The code has no OS gate. On macOS I tested it with
+   another container's `/proc/<pid>/ns/*` inside the VM, and it works as on
+   Linux. On Windows the engine is the same static Linux build in WSL 2, which
+   I built and tested that way, but I have not run it end to end on a
+   Windows machine. Is that enough under "every feature ships on all three
+   systems", or would you like a Windows run first?
 2. **Security.** A client with access to the daemon socket could name any
    namespace file, for example `/proc/1/ns/net` (the same as
    `--network host`) or `/proc/1/ns/ipc` (like `--ipc host`). Kiri already
@@ -141,25 +148,24 @@ Fixes #<issue number>
 
 ### How you tested it
 
-On Linux (Debian 13, kernel 6.12, x86_64), with the daemon built from
-`main` and from this change.
+`main` (193dfd7) and this change, side by side, in three places: a Linux
+host (Debian 13, kernel 6.12, x86_64), a clean GitHub runner (Ubuntu 24.04,
+the static x86-64 engine, which is also the engine Windows runs in WSL 2),
+and a Mac (macOS 27, Apple silicon, built with `cargo xtask kernel`,
+`disk`, `guest` and `host`).
 
-Unit tests (`cargo test -p kiri -p kiri-init -p kiri-proto`):
+**Unit tests** (`cargo test -p kiri -p kiri-init -p kiri-proto`, as root on
+the GitHub runner):
 
 ```text
-                 main (193dfd7)              this change
-kiri             233 passed, 4 ignored       237 passed, 4 ignored
-kiri-init         58 passed, 6 failed         60 passed, 6 failed
-kiri-proto         5 passed                    5 passed
+                 main                         this change
+kiri             233 passed, 4 ignored        237 passed, 4 ignored
+kiri-init         64 passed                    66 passed
+kiri-proto         5 passed                     5 passed
 ```
 
-The 6 `kiri-init` failures (`layers` and `dns` tests) fail the same way on
-`main`: they need privileges the test run did not have.
-
-Before and after, a pinned network, UTS and IPC namespace and two
-containers joining them through the API:
-
-Setup (as root):
+**Joining namespaces by path.** On Linux, the namespaces are pinned with
+the usual tools:
 
 ```sh
 ip netns add nsdemo && ip -n nsdemo link set lo up
@@ -168,52 +174,88 @@ unshare --uts=/run/nsdemo/uts --ipc=/run/nsdemo/ipc hostname pod-host
 mkfifo /run/nsdemo/fifo
 ```
 
-Each container is created through the API with `"Hostname": "ignored"`,
-`"NetworkMode": "ns:/run/netns/nsdemo"`, `"UTSMode": "ns:/run/nsdemo/uts"`,
-`"IpcMode": "ns:/run/nsdemo/ipc"`, and prints its hostname and
-`readlink /proc/self/ns/{net,uts,ipc}`. The pinned files are net
-4026532401, uts 4026532482, ipc 4026532483.
+Two containers are then created through the API with `"Hostname": "ignored"`,
+`"NetworkMode": "ns:/run/netns/nsdemo"`, `"UTSMode": "ns:/run/nsdemo/uts"`
+and `"IpcMode": "ns:/run/nsdemo/ipc"`, and print their hostname and
+`readlink /proc/self/ns/{net,uts,ipc}`. A third points its network at the
+FIFO.
 
 Before (`main`):
 
 ```text
 $ create nsdemo-a with NetworkMode, UTSMode, IpcMode = ns:<path>
 {"message":"network ns:/run/netns/nsdemo not found"}
-$ create nsdemo-b with NetworkMode, UTSMode, IpcMode = ns:<path>
-{"message":"network ns:/run/netns/nsdemo not found"}
 $ create and start a container whose network path is a FIFO
 {"message":"network ns:/run/nsdemo/fifo not found"}
 ```
 
-After (this change):
+After (this change, GitHub runner; pinned net 4026532273, uts 4026532337,
+ipc 4026532338):
 
 ```text
 $ start -a nsdemo-a
-hostname=pod-host net:[4026532401] uts:[4026532482] ipc:[4026532483]
+hostname=pod-host net:[4026532273] uts:[4026532337] ipc:[4026532338]
 $ start -a nsdemo-b
-hostname=pod-host net:[4026532401] uts:[4026532482] ipc:[4026532483]
+hostname=pod-host net:[4026532273] uts:[4026532337] ipc:[4026532338]
 $ create and start a container whose network path is a FIFO
-Error response from daemon: run 64f2aac6...: network namespace /run/nsdemo/fifo: not a namespace file
+Error response from daemon: run b1cca01d...: network namespace /run/nsdemo/fifo: not a namespace file
 ```
 
-Both containers are in the pinned namespaces and have the namespace's
-hostname, not the one the client sent. The FIFO is refused at start
-instead of blocking the agent.
-
-`tests/e2e.sh` against the daemon, `main` and this change:
+On macOS the paths are inside Kiri's VM, so a running "pod" container
+(`--hostname pod-host`) provides them as `/proc/<its pid>/ns/*`, and the
+FIFO sits in its root filesystem. After (this change):
 
 ```text
-main (193dfd7):  454 passed, 44 failed, 0 skipped
-this change:     454 passed, 44 failed, 0 skipped
+$ pod container: VM pid 60, hostname=pod-host net:[4026532195] uts:[4026532191] ipc:[4026532192]
+$ start -a nsdemo-a
+hostname=pod-host net:[4026532195] uts:[4026532191] ipc:[4026532192]
+$ start -a nsdemo-b
+hostname=pod-host net:[4026532195] uts:[4026532191] ipc:[4026532192]
+$ create and start a container whose network path is a FIFO (/proc/60/root/fifo)
+Error response from daemon: run c8a503bc...: network namespace /proc/60/root/fifo: not a namespace file
 ```
 
-The same 44 checks fail on both, so the change adds no failures. They
-come from the test machine, not from Kiri: the suite expects a Mac
-(Finder folders, `kiri machine` checks), an interactive terminal (TTY
-checks), the default 172.17.0.0/16 bridge (taken by Docker on this host)
-and open internet access (this network only allows DNS to one resolver).
+In every case both containers are in the pinned namespaces and have the
+namespace's hostname, not the one the client sent, and the FIFO is refused
+at start instead of blocking the agent. `main` refuses all three with
+`not found` on both systems.
 
-Tested on: Linux (Debian 13). <macOS and Windows: pending, per the issue>
+**`tests/e2e.sh`:**
+
+```text
+                         main                         this change
+Mac (Apple silicon)      551 passed, 2 failed         552 passed, 1 failed
+GitHub runner (Linux)    446 passed, 41 failed, 11 skipped (both, same checks)
+Linux host               454 passed, 44 failed (both, same checks)
+```
+
+No check fails with the change that passes on `main`. On the Mac,
+`dns-user-net-forwards` fails on both because the network there only allows
+DNS to approved resolvers, and `logs` failed once on `main` (it read nginx's
+output before nginx printed it). On Linux the failing checks are the
+Mac-only ones (Finder folders, Rosetta, `kiri machine`), TTY checks without
+a terminal, and the machines' own networking.
+
+**Speed check** (`scripts/perf-run.sh`, 400 runs each, on GitHub):
+within the limits.
+
+```text
+                                   main        this change
+docker run --rm alpine true, p50   19.418 ms   19.406 ms
+GET /_ping, p50                    0.209 ms    0.207 ms
+Daemon memory at rest              8.4 MiB     7.9 MiB
+System calls per container         162         162
+kiri binary                        6442 KiB    6446 KiB
+kiri-init binary                   1669 KiB    1669 KiB
+```
+
+**Windows:** `kiri-win` builds and passes its tests on `windows-latest` on
+both sides; it does not depend on the changed crates. The engine Windows
+runs in WSL 2 is the static Linux build tested above. Not yet run end to
+end on a Windows machine.
+
+Tested on: Linux (Debian 13, Ubuntu 24.04), macOS 27 (Apple silicon),
+Windows (build and unit tests).
 
 ### How you found it
 
@@ -232,4 +274,5 @@ state>
 - [x] `cargo fmt`, `cargo clippy` and the tests pass (see the note on
   `cargo fmt` and the pre-existing test failures above)
 - [ ] It works on macOS, Windows and Linux, or the change only touches one
-  of them
+  of them (macOS and Linux tested end to end; Windows engine tested as the
+  static Linux build; see the issue)
