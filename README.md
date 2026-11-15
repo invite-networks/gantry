@@ -1,12 +1,12 @@
-# gantry
+# Gantry
 
-gantry is a pod-first container orchestrator. It reads the Compose
-format, creates each pod's namespaces itself, puts the pod straight onto
-your LAN with macvlan or ipvlan, applies an nftables firewall inside the
-pod, and then starts the pod's containers with Docker, Podman or kiri.
+Gantry is a pod-first container orchestrator. It reads the Compose format,
+creates each pod's namespaces itself, puts the pod straight onto your LAN
+with macvlan or ipvlan, applies an nftables firewall inside the pod, and
+then starts the pod's containers with Docker, Podman or kiri.
 
-There is no infra or pause container. gantry pins the namespaces the
-same way `ip netns add` does, and every container joins them by path.
+There is no infra or pause container. Gantry pins the namespaces the same
+way `ip netns add` does, and every container joins them by path.
 
 ```
                  LAN (vlan4, 192.0.2.216/29)
@@ -27,18 +27,30 @@ Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 
 ## Install
 
-gantry needs Linux, root, `nft` (nftables) for pod firewalls, and at
-least one engine.
+Gantry needs Linux, root, `nft` (nftables) for pod firewalls, and at least
+one engine.
+
+From a Debian package (built with `scripts/package.sh`):
+
+```sh
+sudo apt install ./gantry_0.1.0-1_amd64.deb
+```
+
+From source:
 
 ```sh
 cargo build --release
 sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
-sudo gantry setup docker      # once per host, if you use Docker
 ```
 
-`setup docker` registers the `gantry-oci` runtime shim in
-`/etc/docker/daemon.json` and reloads dockerd. For kiri, see
-`contrib/kiri`.
+Then, once per host, for each engine you use:
+
+```sh
+sudo gantry setup docker      # registers the gantry-oci runtime shim with dockerd
+sudo gantry setup podman      # enables Podman's API socket (podman.socket)
+```
+
+For kiri, see `contrib/kiri`.
 
 ## A first pod
 
@@ -68,10 +80,9 @@ services:
     image: nginx:alpine
     pod: web
   app:
-    image: alpine:3
+    build: ./app
     pod: web
     runtime: podman
-    command: ["sh", "-c", "while sleep 10; do wget -qO- http://localhost/ >/dev/null && echo ok; done"]
 ```
 
 ```sh
@@ -89,75 +100,99 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 
 | Command | What it does |
 |---|---|
-| `up [-d] [--wait] [--force-recreate] [--pull P] [svc...]` | Create pods, then create and start services in dependency order. Without `-d` it follows logs and stops services on Ctrl-C. |
-| `down [-v] [-t SECS]` | Remove containers, then pods (namespaces, links, DHCP leases). `-v` also removes named volumes. |
+| `up [-d] [--wait] [--build] [--force-recreate] [--pull P] [svc...]` | Build or pull images, create pods, then create and start services. Services in the same dependency level start in parallel. Without `-d` it follows logs and stops services on Ctrl-C. |
+| `down [-v] [-t SECS]` | Remove containers (in parallel, reverse dependency order), then pods (namespaces, links, DHCP leases). `-v` also removes named volumes. |
+| `run [--rm] [-T] [--no-deps] [-e K=V] [-u U] [-w DIR] [--entrypoint E] svc [cmd...]` | Run a one-off container of a service in its pod, attached. Exits with the container's exit code. |
+| `exec [-T] [-u U] [-w DIR] [-e K=V] svc cmd...` | Run a command in a running service. |
 | `ps` | Services, their pod, runtime and state. |
-| `logs [-f] [--tail N] [svc...]` | Logs, prefixed by service. |
-| `exec [-T] [-u U] [-w DIR] [-e K=V] svc cmd...` | Run a command in a service. |
+| `logs [-f] [--tail N] [-t] [svc...]` | Logs, prefixed by service. |
 | `start`, `stop`, `restart [svc...]` | Start or stop services; pods stay up. |
-| `pull [svc...]` | Pull images. |
+| `kill [-s SIG] [svc...]`, `rm [-s] [svc...]` | Signal services; remove stopped service containers. |
+| `top [svc...]` | Processes in each service. |
+| `build [svc...]`, `pull [svc...]` | Build or pull images. Pulls run in parallel. |
 | `config [--services\|--pods\|--json]` | Validate and print the normalized project. |
-| `pod ls` | Pods, their namespace, addresses and firewall state. |
-| `pod inspect POD` | Pod state as JSON, including DHCP leases. |
-| `pod exec POD cmd...` | Run a host command inside the pod's network namespace (`ip addr`, `tcpdump`, `nft list ruleset`). |
-| `firewall show POD` | The generated ruleset and what is loaded. |
-| `firewall reload` | Re-render hosts files and firewalls (after DHCP address changes). |
-| `setup docker` | Register the Docker runtime shim. |
+| `ls` | Projects with pods on this host. |
+| `pod ls`, `pod inspect POD`, `pod exec POD cmd...` | Pods, their addresses, state and DHCP leases; run a host command (`ip`, `tcpdump`, `nft`) in a pod's network namespace. |
+| `firewall show POD`, `firewall reload` | The generated ruleset and what is loaded; re-render hosts files and firewalls. |
+| `setup docker`, `setup podman` | One time host setup per engine. |
+| `version`, `completion SHELL` | Versions of Gantry and each engine; shell completions. |
 
 Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
 `--env-file`, `--profile`, `--runtime docker|podman|kiri`, `--log-level`.
 
 ## How it works
 
-1. **Pod namespaces.** For each pod gantry creates a network namespace at
+1. **Pod namespaces.** For each pod Gantry creates a network namespace at
    `/run/netns/gt-<project>-<pod>` (so `ip netns` sees it), plus UTS and IPC
-   namespaces under `/run/gantry/<project>/pods/<pod>/`. It sets the
-   hostname inside the UTS namespace.
+   namespaces under `/run/gantry/<project>/pods/<pod>/`. It sets the hostname
+   inside the UTS namespace.
 2. **Links.** For every network it creates a macvlan or ipvlan link on the
    parent directly inside the pod namespace, renames it to `eth0`, `eth1`,
    ..., assigns static addresses and the default route, and sends
    gratuitous ARP. DHCP networks get a small agent process
-   (`gantry internal dhcp-agent`) that lives in the pod namespace, holds
-   the lease, renews it and releases it on `down`.
+   (`gantry internal dhcp-agent`) that lives in the pod namespace, holds the
+   lease, renews it and releases it on `down`. When a lease changes address,
+   the agent rewrites every pod's hosts file and firewall.
 3. **Shared files.** `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`
    are written to the pod directory and bind mounted into every container.
 4. **Firewall.** The pod's rules are rendered into an `inet gantry` table
    and loaded with `nft` inside the pod namespace.
-5. **Containers.** Each service is created with its engine and joined to
-   the pod's namespaces by path. Labels (`io.gantry.*`) record the project,
-   service, pod instance and a config hash, so a second `up` only touches
-   what changed. A pod whose network shape changes is recreated along with
-   its containers.
+5. **Containers.** Each service is created through its engine's API and
+   joined to the pod's namespaces by path. Labels (`io.gantry.*`) record the
+   project, service, pod instance and a config hash, so a second `up` only
+   touches what changed.
+
+### Engines
+
+Gantry talks to every engine through the Docker Engine API over its Unix
+socket, using one client (`bollard`). No engine CLI is involved in normal
+operation:
+
+| Runtime | Socket | How containers join the pod |
+|---|---|---|
+| Docker | `/var/run/docker.sock` | `gantry-oci` runtime shim (below) |
+| Podman | `/run/podman/podman.sock` (Docker-compatible API) | `ns:<path>` network, UTS and IPC modes |
+| kiri | `/run/kiri/docker.sock` | `ns:<path>` modes, with the patches in `contrib/kiri` |
+
+If Podman's socket is not active, Gantry starts `podman.socket`, or as a
+last resort a private `podman system service` that exits when idle.
+
+Image builds (`build:`) are the one exception: they run through
+`docker build` or `podman build`, which brings BuildKit, `.dockerignore` and
+build secrets. Registry credentials for pulls come from the same files
+`docker login` and `podman login` write, including credential helpers.
 
 ### Docker and the runtime shim
 
-The Docker CLI and API cannot join a namespace by path. gantry starts
-Docker containers with `--runtime gantry --network none` and annotations
-naming the pod's namespaces. Docker passes annotations into the OCI spec;
+The Docker API cannot join a namespace by path. Gantry creates Docker
+containers with runtime `gantry` and network `none`, plus annotations naming
+the pod's namespaces. Docker passes annotations into the OCI spec;
 `gantry-oci` rewrites the namespace paths in `config.json` (and drops the
-hostname when the UTS namespace is shared) and execs `runc` with the
-original arguments. Set `GANTRY_OCI_RUNTIME` in dockerd's environment to
-hand off to another runtime (crun, for example). The shim only accepts namespace paths under
-`/run/netns/` and `/run/gantry/`.
+hostname when the UTS namespace is shared) and execs `runc`. Set
+`GANTRY_OCI_RUNTIME` in dockerd's environment to hand off to another
+runtime (crun, for example). The shim only accepts namespace paths under
+`/run/netns/` and `/run/gantry/`. Docker restarts keep working: Docker runs
+the shim again and the container rejoins the pod.
 
-### kiri
+### Performance
 
-kiri speaks the Docker Engine API, so gantry drives it with
-`docker -H unix:///run/kiri/docker.sock` (override with
-`GANTRY_KIRI_HOST`). Upstream kiri 0.2.0 only joins another container's
-namespace (`container:<name>`). The patch in `contrib/kiri` adds Podman's
-`ns:<path>` network mode. kiri containers share the pod's network
-namespace and its `/etc/hosts` and `/etc/resolv.conf`. They keep their own
-UTS and IPC namespaces, so gantry sets the pod hostname on them.
+Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman):
+
+| Operation | CLI-driven prototype | Gantry (API) |
+|---|---|---|
+| `up` from scratch | 2.3 s | 0.45 to 0.7 s |
+| `up` with nothing to change | 820 ms | 80 ms |
+| `ps` | 128 ms | 45 ms |
+| `down` | 1.35 s | 0.35 to 0.6 s |
 
 ## Running at boot
 
-Pods live under `/run`, so they are gone after a reboot. The unit in
-`contrib/systemd/gantry@.service` runs `gantry up -d --wait` for
-`/etc/gantry/<name>/` at boot and `gantry down` at shutdown:
+Pods live under `/run`, so they are gone after a reboot. The unit
+`gantry@.service` (installed by the package, or copy it from
+`contrib/systemd/`) runs `gantry up -d --wait` for `/etc/gantry/<name>/` at
+boot and `gantry down` at shutdown:
 
 ```sh
-sudo cp contrib/systemd/gantry@.service /etc/systemd/system/
 sudo systemctl enable --now gantry@myproject
 ```
 
@@ -168,34 +203,34 @@ sudo systemctl enable --now gantry@myproject
   through the router, or use a parent the host does not use itself.
 * A parent interface carries macvlan or ipvlan links, not both.
 * ipvlan links share the parent's MAC address, so DHCP servers must key
-  leases on the client identifier (gantry always sends one).
+  leases on the client identifier (Gantry always sends one).
 * Pods rely on the LAN for DNS. Without `dns:` a static pod uses the host's
   upstream servers (skipping loopback resolvers such as systemd-resolved's
   127.0.0.53, which a pod cannot reach).
-* Docker-only state such as restart policies keeps working: when Docker
-  restarts a container it runs the shim again and rejoins the pod.
 
 ## Environment
 
 | Variable | Default | Use |
 |---|---|---|
+| `GANTRY_DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API socket |
+| `GANTRY_PODMAN_HOST` | `unix:///run/podman/podman.sock` | Podman API socket |
+| `GANTRY_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri API socket |
 | `GANTRY_RUN_DIR` | `/run/gantry` | State directory |
 | `GANTRY_NETNS_DIR` | `/run/netns` | Where network namespaces are pinned |
-| `GANTRY_DOCKER` | `docker` | Docker CLI (also used for kiri) |
-| `GANTRY_PODMAN` | `podman` | Podman CLI |
-| `GANTRY_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri's API socket |
-| `GANTRY_NFT` | `nft` | nftables CLI |
 | `GANTRY_LOG` | `info` | Log level |
+| `GANTRY_OCI_RUNTIME` | `runc` | Runtime the shim hands off to (set in dockerd's environment) |
 
 ## Development
 
 ```sh
-cargo test                                   # unit tests (Linux)
+cargo test                                         # unit tests (Linux)
 GANTRY_DEV_HOST=user@host scripts/remote.sh cargo test   # from a Mac
-sudo tests/integration/run.sh                # live tests; see the script header
+sudo tests/integration/run.sh                      # live tests; see the script header
+scripts/package.sh                                 # Debian package
 ```
 
-See [docs/compose-spec.md](docs/compose-spec.md) for the full file format
+See [docs/compose-spec.md](docs/compose-spec.md) for the file format,
+[docs/](docs/README.md) for requirements, design, test plan and runbooks,
 and [DECISIONS.md](DECISIONS.md) for design choices.
 
 ## License

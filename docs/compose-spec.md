@@ -1,9 +1,8 @@
-# The gantry file format
+# The Gantry file format
 
-gantry reads the Compose format and extends it where pods need it. A plain
-`compose.yaml` works when its services set `image:` and use macvlan or
-ipvlan networks. Everything below is either standard Compose or marked as a
-gantry extension.
+Gantry reads the Compose format and extends it where pods need it. A plain
+`compose.yaml` works when its services use macvlan or ipvlan networks. Everything below is either standard Compose or marked as a
+Gantry extension.
 
 Files are looked up in this order: `gantry.yaml`, `gantry.yml`,
 `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`.
@@ -35,7 +34,7 @@ from the environment first, then from `.env` in the project directory (or
 
 ## networks
 
-gantry does not build bridges or NAT. A network is a parent interface on
+Gantry does not build bridges or NAT. A network is a parent interface on
 the host, and each pod gets its own macvlan or ipvlan link on it with its own
 address on the LAN.
 
@@ -89,10 +88,10 @@ pods:
 ```
 
 Every pod network needs an address: `ipv4_address`, `addresses` or
-`dhcp: true`. gantry never picks LAN addresses on its own.
+`dhcp: true`. Gantry never picks LAN addresses on its own.
 
 With macvlan, a pod's MAC is derived from the project, pod and network names,
-so it keeps the same MAC (and DHCP lease) across restarts. gantry sends
+so it keeps the same MAC (and DHCP lease) across restarts. Gantry sends
 gratuitous ARP when it assigns an address so the LAN forgets stale entries.
 
 The first network carries the default route unless another sets
@@ -105,9 +104,8 @@ All services in a pod share:
 * the network namespace (interfaces, addresses, routes, firewall, ports).
   Services reach each other on `127.0.0.1`/`localhost`.
 * the UTS namespace (hostname) and IPC namespace, unless `share` says
-  otherwise. (kiri containers keep their own UTS and IPC namespaces; see
-  the README.)
-* `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`, which gantry
+  otherwise.
+* `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`, which Gantry
   writes and bind mounts read only.
 
 ### Names
@@ -165,7 +163,7 @@ A rule with `port` and no `proto` is TCP.
 Service `ports:` and `expose:` feed the firewall:
 
 * `ports: ["80", "443/tcp"]` opens those ports to everyone. A host mapping
-  like `"8080:80"` has no meaning for a pod on the LAN; gantry opens the
+  like `"8080:80"` has no meaning for a pod on the LAN; Gantry opens the
   container port (80) and warns.
 * `expose: ["5432"]` opens the port to the project's other pods only.
 
@@ -195,19 +193,53 @@ Supported keys: `image`, `pod`, `runtime` (extension), `container_name`,
 `stop_grace_period`, `cap_add`, `cap_drop`, `privileged`, `read_only`,
 `devices`, `tty`, `stdin_open`, `init`, `mem_limit`, `cpus`, `pids_limit`,
 `shm_size`, `ulimits`, `security_opt`, `group_add`, `sysctls` (non-net),
-`pull_policy`, `ports`, `expose`, `profiles`.
+`pull_policy` (`missing`, `always`, `never`, `build`), `ports`, `expose`,
+`profiles`, `logging` (`driver`, `options`), `platform`, and `build`
+(below).
 
-Ignored with a warning: `logging`, `deploy`, `scale`, `links`,
-`external_links`, `platform` and unknown keys. `build` is an error for now.
+Ignored with a warning: `deploy`, `scale`, `links`, `external_links` and
+unknown keys.
+
+### build
+
+```yaml
+services:
+  app:
+    build: ./app                 # or the long form:
+    # build:
+    #   context: ./app
+    #   dockerfile: Containerfile
+    #   dockerfile_inline: |
+    #     FROM alpine:3
+    #   args: { VERSION: "1.2" }
+    #   target: runtime
+    #   labels: { team: net }
+    #   pull: true
+    #   no_cache: true
+    #   network: host
+    #   cache_from: [registry.example.com/app:cache]
+    #   tags: [registry.example.com/app:dev]
+    #   extra_hosts: ["mirror:10.0.0.5"]
+    #   shm_size: 256m
+```
+
+A service with `build:` and no `image:` is tagged `<project>-<service>`
+(Podman stores it as `localhost/<project>-<service>`). The image is built
+when it is missing, on `gantry build`, on `up --build`, or every time with
+`pull_policy: build`. Builds run through `docker build` (BuildKit) or
+`podman build`; kiri builds use the Docker CLI against kiri's socket with
+the classic builder. Remote (git or URL) contexts are not supported.
 
 Container names default to `<project>-<service>-1`.
 
 ## Runtimes
 
-| Runtime | Engine | How containers join the pod |
+Gantry drives every runtime through the Docker Engine API on its socket.
+
+| Runtime | Socket | How containers join the pod |
 |---|---|---|
-| `docker` | `docker` CLI | `--runtime gantry --network none`, with annotations that the `gantry-oci` shim turns into namespace paths before running runc. Run `gantry setup docker` once per host. |
-| `podman` | `podman` CLI | `--network ns:<path>`, `--uts ns:<path>`, `--ipc ns:<path>`. Bare image names are qualified to `docker.io`. |
-| `kiri` | `docker -H unix:///run/kiri/docker.sock` | `--network ns:<path>`. Needs the kiri patch in `contrib/kiri`. |
+| `docker` | `/var/run/docker.sock` | Runtime `gantry` with network `none`, plus annotations that the `gantry-oci` shim turns into namespace paths before running runc. Run `gantry setup docker` once per host. |
+| `podman` | `/run/podman/podman.sock` (Docker-compatible API) | Network, UTS and IPC modes `ns:<path>`. Bare image names are qualified to `docker.io`. `gantry setup podman` enables the socket; Gantry starts it on demand otherwise. |
+| `kiri` | `/run/kiri/docker.sock` | Network, UTS and IPC modes `ns:<path>`. Needs the kiri patches in `contrib/kiri`. |
 
 Services in one pod may use different runtimes.
