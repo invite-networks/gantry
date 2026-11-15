@@ -41,7 +41,7 @@ e2e() {
     check "shared hostname" sh -c "$K exec -T client hostname | grep -qx webhost && $K exec -T server hostname | grep -qx webhost"
   fi
   check "loopback between services in a pod" sh -c "$K exec -T client sh -c 'nc -w 3 127.0.0.1 8080' | grep -q hello-from-web"
-  check "service name resolves to loopback" sh -c "$K exec -T client getent hosts server | grep -q '127.0.1.1'"
+  check "service name resolves to loopback" sh -c "$K exec -T client ping -c1 -W1 server | grep -q '127.0.0.1'"
   check "other pod reachable by service name" sh -c "$K exec -T client nc -z -w 3 redis 6379"
   check_not "firewall blocks other -> data:6379" sh -c "$K exec -T probe nc -z -w 3 redis 6379"
   check "firewall allows other -> web:8080" sh -c "$K exec -T probe sh -c 'nc -w 3 server 8080' | grep -q hello-from-web"
@@ -63,6 +63,8 @@ e2e() {
 dhcp() {
   echo "== dhcp"
   command -v dnsmasq >/dev/null || { bad "dnsmasq not installed"; return; }
+  had_lab=0
+  ip link show ksdhcp0 >/dev/null 2>&1 && had_lab=1
   "$here/dhcp-lab.sh" up >/dev/null
   K="kirisame -f $here/dhcp/kirisame.yaml"
   $K down >/dev/null 2>&1
@@ -74,7 +76,7 @@ dhcp() {
   $K down >/dev/null 2>&1
   check "lease released on down" grep -q DHCPRELEASE /run/ksdhcp.log
   check_not "agent stopped" pgrep -f "dhcp-agent.*dhcplab"
-  "$here/dhcp-lab.sh" down >/dev/null
+  [ "$had_lab" = 1 ] || "$here/dhcp-lab.sh" down >/dev/null
 }
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }

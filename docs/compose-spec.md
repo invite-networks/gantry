@@ -114,8 +114,9 @@ All services in a pod share:
 
 `/etc/hosts` in every pod lists:
 
-* the pod's hostname, pod name and its service names on `127.0.1.1` and
-  `::1`, so `http://nginx/` from a sibling container stays on loopback;
+* the pod's hostname, pod name and its service names on `127.0.0.1`, so
+  `http://nginx/` from a sibling container stays on loopback (IPv4 only, so
+  servers bound to `127.0.0.1` or `0.0.0.0` are reached);
 * every other pod's first IPv4 and IPv6 address under its hostname, pod
   name and service names.
 

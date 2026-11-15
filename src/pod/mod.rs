@@ -470,12 +470,10 @@ pub fn refresh(project: &Project) -> Result<()> {
         }
         local.push(pod.name.clone());
         local.extend(project.services_in_pod(&pod.name).map(|s| s.name.clone()));
+        // IPv4 loopback only: resolvers that prefer IPv6 would otherwise
+        // pick ::1 and miss servers bound to 127.0.0.1 or 0.0.0.0.
         entries.push(files::HostEntry {
-            addr: IpAddr::from([127, 0, 1, 1]),
-            names: local.clone(),
-        });
-        entries.push(files::HostEntry {
-            addr: "::1".parse().unwrap_or(IpAddr::from([0u8; 16])),
+            addr: IpAddr::from([127, 0, 0, 1]),
             names: local,
         });
         // Other pods resolve to their LAN addresses.

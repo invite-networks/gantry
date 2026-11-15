@@ -1,0 +1,310 @@
+From 85366eec0f6ec4cf81a6044b09aad258eace92c1 Mon Sep 17 00:00:00 2001
+From: Adam Asay <aasay@users.noreply.github.com>
+Date: Sat, 14 Nov 2026 23:26:16 -0700
+Subject: [PATCH] Network mode ns:<path>: join an existing network namespace
+
+Accept Podman's --network ns:<absolute path> (for example a namespace
+made with ip netns add at /run/netns/<name>). The container joins that
+namespace as it is: no bridge, veth, address, published ports or
+extra networks, and teardown never changes anything in it. It keeps
+its own hostname, /etc/hosts and resolv.conf, so --hostname, --dns and
+--add-host apply. docker exec works as for any container.
+
+The daemon validates the path is absolute and refuses port publishing,
+a MAC address and links; it passes the path to the agent as the new
+netns_path net option. The agent opens it, checks it is a network
+namespace (NS_GET_NSTYPE) and uses it like --network container:.
+---
+ crates/kiri-init/src/linux/container.rs | 38 ++++++++++++++-
+ crates/kiri-proto/src/lib.rs            |  4 ++
+ crates/kiri/src/daemon/api.rs           | 65 ++++++++++++++++++++++---
+ crates/kiri/src/daemon/engine.rs        | 33 +++++++++++--
+ 4 files changed, 126 insertions(+), 14 deletions(-)
+
+diff --git a/crates/kiri-init/src/linux/container.rs b/crates/kiri-init/src/linux/container.rs
+index a91e6bb..07a8a9d 100644
+--- a/crates/kiri-init/src/linux/container.rs
++++ b/crates/kiri-init/src/linux/container.rs
+@@ -270,7 +270,11 @@ pub fn spawn(spec: &RunSpec<'_>, paths: &Paths, net: NetCtx<'_>) -> io::Result<P
+     }
+     prepared.domainname = net_opts::values(spec.net.opts, net_opts::DOMAINNAME).next().filter(|d| !d.is_empty()).map(|d| d.as_bytes().to_vec());
+     let mut netns = 0;
+-    if let Some(target) = net_opts::values(spec.net.opts, net_opts::NETNS).next() {
++    if let Some(path) = net_opts::values(spec.net.opts, net_opts::NETNS_PATH).next() {
++        let joined = open_netns_path(path).map_err(cleanup)?;
++        netns = netns_inode(&joined);
++        prepared.net_join = Some(joined);
++    } else if let Some(target) = net_opts::values(spec.net.opts, net_opts::NETNS).next() {
+         let pid = net.join_pid.ok_or_else(|| cleanup(io::Error::other(format!("cannot join network of a non running container: {target}"))))?;
+         let joined = fs::File::open(format!("/proc/{pid}/ns/net")).map_err(cleanup)?;
+         netns = netns_inode(&joined);
+@@ -545,6 +549,25 @@ pub fn teardown(p: &Process, netns_shared: bool) {
+     }
+ }
+ 
++/// `--network ns:<path>`: a network namespace someone else made and keeps
++/// (`ip netns add`, a pod manager). It must be an absolute path to a
++/// network namespace, checked here so a wrong one fails with its path
++/// rather than as the child's "join network container: Invalid argument".
++fn open_netns_path(path: &str) -> io::Result<fs::File> {
++    const NS_GET_NSTYPE: libc::c_ulong = 0xb703; // _IO(0xb7, 0x3)
++    let fail = |what: String| io::Error::new(io::ErrorKind::InvalidInput, format!("network namespace {path}: {what}"));
++    if !path.starts_with('/') {
++        return Err(fail("not an absolute path".into()));
++    }
++    let f = fs::File::open(path).map_err(|e| io::Error::new(e.kind(), format!("network namespace {path}: {e}")))?;
++    // SAFETY: an ioctl without arguments on a file we own.
++    let kind = unsafe { libc::ioctl(f.as_raw_fd(), NS_GET_NSTYPE as _) };
++    if kind != libc::CLONE_NEWNET {
++        return Err(fail("not a network namespace".into()));
++    }
++    Ok(f)
++}
++
+ fn netns_inode(f: &fs::File) -> u64 {
+     use std::os::unix::fs::MetadataExt;
+     f.metadata().map_or(0, |m| m.ino())
+@@ -1543,6 +1566,19 @@ fn find_executable(p: &Prepared) -> Option<CString> {
+ mod tests {
+     use kiri_proto::{Limits, Msg, Net, decode, encode_run, run_flags};
+ 
++    /// `--network ns:<path>` takes only an absolute path to a network
++    /// namespace: not a relative one, a missing one or another namespace.
++    #[test]
++    fn only_a_network_namespace_path_is_joined() {
++        let me = std::fs::File::open("/proc/self/ns/net").unwrap();
++        let joined = super::open_netns_path("/proc/self/ns/net").unwrap();
++        assert_eq!(super::netns_inode(&joined), super::netns_inode(&me));
++        assert!(super::open_netns_path("proc/self/ns/net").unwrap_err().to_string().contains("not an absolute path"));
++        assert!(super::open_netns_path("/proc/self/ns/uts").unwrap_err().to_string().contains("not a network namespace"));
++        assert!(super::open_netns_path("/proc/self/status").unwrap_err().to_string().contains("not a network namespace"));
++        assert!(super::open_netns_path("/run/netns/kiri-test-missing").is_err());
++    }
++
+     /// Only a pipe or a terminal the user doesn't own yet changes hands:
+     /// never /dev/null, a file or a socket, which a stream could otherwise be.
+     #[test]
+diff --git a/crates/kiri-proto/src/lib.rs b/crates/kiri-proto/src/lib.rs
+index 670ef71..a0a5ad9 100644
+--- a/crates/kiri-proto/src/lib.rs
++++ b/crates/kiri-proto/src/lib.rs
+@@ -400,6 +400,10 @@ pub mod net_opts {
+     /// `netns=<container id>`: join that running container's network
+     /// namespace instead of getting one (`--network container:<id>`).
+     pub const NETNS: &str = "netns";
++    /// `netns_path=/run/netns/pod`: join the network namespace bound at
++    /// that absolute path (`--network ns:<path>`, as with Podman). Kiri did
++    /// not make it, so it never changes or removes anything in it.
++    pub const NETNS_PATH: &str = "netns_path";
+     /// `mac=02:42:ac:11:00:02`: the container side's MAC address.
+     pub const MAC: &str = "mac";
+     /// `nameserver=1.1.1.1` (`--dns`): with `DNS_GATEWAY` the gateway's DNS
+diff --git a/crates/kiri/src/daemon/api.rs b/crates/kiri/src/daemon/api.rs
+index ed75483..2a267e4 100644
+--- a/crates/kiri/src/daemon/api.rs
++++ b/crates/kiri/src/daemon/api.rs
+@@ -1430,9 +1430,14 @@ pub(super) fn create(req: &Request, engine: &Engine) -> Result<Value, Error> {
+         "" | "default" => "bridge".to_owned(),
+         m => m.to_owned(),
+     };
+-    let network = match network_mode.strip_prefix("container:") {
+-        Some(target) => Some(container_network_mode(&body, engine, target)?),
+-        None => engine.lock_net().find(&network_mode).map(|n| n.name.clone()),
++    let network = if let Some(path) = network_mode.strip_prefix("ns:") {
++        ns_mode_allowed(&body, path)?;
++        Some(network_mode.clone())
++    } else {
++        match network_mode.strip_prefix("container:") {
++            Some(target) => Some(container_network_mode(&body, engine, target)?),
++            None => engine.lock_net().find(&network_mode).map(|n| n.name.clone()),
++        }
+     };
+     let Some(network_mode) = network else {
+         return Err(Error::NotFound(format!("network {network_mode} not found")));
+@@ -1447,10 +1452,10 @@ pub(super) fn create(req: &Request, engine: &Engine) -> Result<Value, Error> {
+     let mut mac_address = body["MacAddress"].as_str().unwrap_or_default().to_owned();
+     if let Some(eps) = body["NetworkingConfig"]["EndpointsConfig"].as_object() {
+         for (net, ep) in eps {
+-            if net.starts_with("container:") {
++            if super::engine::shares_netns(net) {
+                 continue;
+             }
+-            if network_mode.starts_with("container:") {
++            if super::engine::shares_netns(&network_mode) {
+                 return Err(Error::BadRequest("container sharing network namespace with another container or host cannot be connected to any other network".into()));
+             }
+             let names = strings(&ep["Aliases"]).unwrap_or_default();
+@@ -1654,6 +1659,35 @@ fn container_mode_allowed(body: &Value, target: &str) -> Result<(), Error> {
+     Ok(())
+ }
+ 
++/// `--network ns:<path>` (Podman's): join a network namespace made outside
++/// Kiri, such as `ip netns add pod` makes at /run/netns/pod. The container
++/// keeps its own hostname, /etc/hosts and resolv.conf (`--dns` and
++/// `--add-host` apply), as Podman's does. What would need Kiri to change
++/// that namespace is refused: published ports, a MAC address, links.
++fn ns_mode_allowed(body: &Value, path: &str) -> Result<(), Error> {
++    let host = &body["HostConfig"];
++    let given = |v: &Value| match v {
++        Value::Array(a) => !a.is_empty(),
++        Value::Object(o) => !o.is_empty(),
++        Value::String(s) => !s.is_empty(),
++        _ => false,
++    };
++    let conflict = |what: &str| Err(Error::BadRequest(format!("conflicting options: {what}")));
++    if !path.starts_with('/') || path.contains('\0') {
++        return Err(Error::BadRequest("Invalid network mode: invalid namespace format ns:<absolute path>".into()));
++    }
++    if given(&host["Links"]) {
++        return conflict("ns type network can't be used with links");
++    }
++    if given(&body["MacAddress"]) {
++        return conflict("mac-address and the network mode");
++    }
++    if given(&host["PortBindings"]) || host["PublishAllPorts"].as_bool() == Some(true) {
++        return conflict("port publishing and the ns type network mode");
++    }
++    Ok(())
++}
++
+ /// An endpoint's `IPAMConfig.IPv4Address`, `IPv6Address` and `MacAddress`,
+ /// checked for form.
+ pub(super) fn endpoint_address(ep: &Value) -> Result<(String, String, String), Error> {
+@@ -1750,8 +1784,9 @@ fn ps_status(c: &Container, health: Option<&super::health::Health>) -> String {
+ /// Addresses are only there while it runs, as in Docker.
+ fn endpoints(c: &Container, networks: &[super::network::Network]) -> Value {
+     // Another container's namespace: no endpoints of its own, as Docker
+-    // shows it (`{}`), not an entry named `container:<id>`.
+-    if c.spec.network_mode.starts_with("container:") {
++    // shows it (`{}`), not an entry named `container:<id>`. The same for
++    // `ns:<path>`, a namespace Kiri did not make.
++    if super::engine::shares_netns(&c.spec.network_mode) {
+         return json!({});
+     }
+     let running = c.status == Status::Running;
+@@ -1974,7 +2009,7 @@ fn inspect(c: &Container, nets: &[super::network::Network]) -> Value {
+ 
+ fn network_settings(c: &Container, nets: &[super::network::Network]) -> Value {
+     // Another container's namespace: nothing of its own, as Docker shows it.
+-    if c.spec.network_mode.starts_with("container:") {
++    if super::engine::shares_netns(&c.spec.network_mode) {
+         return json!({"IPAddress": "", "IPPrefixLen": 0, "MacAddress": "", "Ports": {}, "Networks": {}});
+     }
+     let prefix_of = |name: &str, has_ip: bool| if has_ip { nets.iter().find(|n| n.name == name).map_or(16, |n| n.prefix) } else { 0 };
+@@ -3002,6 +3037,20 @@ mod network_option_tests {
+         }
+     }
+ 
++    #[test]
++    fn ns_network_mode_takes_an_absolute_path_and_no_ports() {
++        assert!(ns_mode_allowed(&json!({"Hostname": "web", "HostConfig": {"Dns": ["10.0.0.53"], "ExtraHosts": ["a:1.2.3.4"], "PortBindings": {}}}), "/run/netns/pod").is_ok());
++        assert!(ns_mode_allowed(&json!({}), "run/netns/pod").is_err());
++        assert!(ns_mode_allowed(&json!({}), "").is_err());
++        let refused = |body: Value| match ns_mode_allowed(&body, "/run/netns/pod") {
++            Err(Error::BadRequest(m)) => m,
++            other => panic!("{other:?}"),
++        };
++        assert_eq!(refused(json!({"HostConfig": {"PortBindings": {"80/tcp": [{"HostPort": "8080"}]}}})), "conflicting options: port publishing and the ns type network mode");
++        assert_eq!(refused(json!({"MacAddress": "02:42:ac:11:00:09"})), "conflicting options: mac-address and the network mode");
++        assert!(refused(json!({"HostConfig": {"Links": ["db:db"]}})).contains("links"));
++    }
++
+     #[test]
+     fn container_network_mode_refuses_what_docker_refuses() {
+         assert!(container_mode_allowed(&json!({"HostConfig": {"NetworkMode": "container:web"}}), "web").is_ok());
+diff --git a/crates/kiri/src/daemon/engine.rs b/crates/kiri/src/daemon/engine.rs
+index 0b73f5c..3f3133d 100644
+--- a/crates/kiri/src/daemon/engine.rs
++++ b/crates/kiri/src/daemon/engine.rs
+@@ -1812,7 +1812,8 @@ impl Engine {
+                 flags |= run_flags::NET_NONE;
+                 (String::new(), [0; 4], 0, [0; 4])
+             }
+-            None if joined.is_some() => (String::new(), [0; 4], 0, [0; 4]),
++            // `--network ns:<path>`: a namespace made outside Kiri, used as it is.
++            None if joined.is_some() || spec.network_mode.starts_with("ns:") => (String::new(), [0; 4], 0, [0; 4]),
+             None => {
+                 let e = Error::NotFound(format!("network {} not found", spec.network_mode));
+                 self.fail_start(&id, &spec, &e);
+@@ -1887,7 +1888,7 @@ impl Engine {
+         if let (true, Some((rows, cols))) = (spec.tty, size) {
+             let _ = vm.resize(&id, rows, cols);
+         }
+-        if flags & (run_flags::NET_HOST | run_flags::NET_NONE) == 0 && joined.is_none() {
++        if flags & (run_flags::NET_HOST | run_flags::NET_NONE) == 0 && !shares_netns(&spec.network_mode) {
+             for (i, extra) in spec.extra_networks.iter().enumerate() {
+                 if let Err(e) = self.attach_extra(&vm, &id, i as u32 + 1, extra) {
+                     crate::diag::warn!("container not attached to a network", id = &id[..12], network = extra.name, error = format!("{e:?}"));
+@@ -2485,7 +2486,7 @@ impl Engine {
+             if matches!(c.spec.network_mode.as_str(), "host" | "none") {
+                 return Err(Error::BadRequest(format!("container cannot be connected to {} while on {}", net.name, c.spec.network_mode)));
+             }
+-            if c.spec.network_mode.starts_with("container:") {
++            if shares_netns(&c.spec.network_mode) {
+                 return Err(Error::BadRequest("container sharing network namespace with another container or host cannot be connected to any other network".into()));
+             }
+             c.spec.extra_networks.push(ExtraNetwork { name: net.name.clone(), aliases, ipv4_address, ipv6_address, mac_address });
+@@ -2626,7 +2627,7 @@ impl Engine {
+         let lines = self.vm()?.listening(&id)?;
+         let (reach, local) = super::ports::listening(&lines, mode == "host");
+         // With no network at all (or another container's), nothing can be published.
+-        if mode == "none" || mode.starts_with("container:") {
++        if mode == "none" || shares_netns(&mode) {
+             return Ok((Vec::new(), [reach, local].concat()));
+         }
+         Ok((reach, local))
+@@ -2644,7 +2645,7 @@ impl Engine {
+             if c.spec.network_mode == "none" && !ports.is_empty() {
+                 return Err(Error::BadRequest("a container with --network none cannot publish ports".into()));
+             }
+-            if c.spec.network_mode.starts_with("container:") && !ports.is_empty() {
++            if shares_netns(&c.spec.network_mode) && !ports.is_empty() {
+                 return Err(Error::BadRequest("conflicting options: port publishing and the container type network mode".into()));
+             }
+             let target = if c.spec.network_mode == "host" { Some([127, 0, 0, 1]) } else { c.ip };
+@@ -3134,6 +3135,9 @@ fn net_opts(spec: &Spec, joined: Option<&str>, domainname: &str) -> Vec<String>
+     if let Some(target) = joined {
+         opts.push(format!("{}={target}", k::NETNS));
+     }
++    if let Some(path) = spec.network_mode.strip_prefix("ns:") {
++        opts.push(format!("{}={path}", k::NETNS_PATH));
++    }
+     if !spec.mac_address.is_empty() {
+         opts.push(format!("{}={}", k::MAC, spec.mac_address));
+     }
+@@ -3203,6 +3207,12 @@ fn comes_back(c: &Container) -> bool {
+     (policy == "always" || (policy == "unless-stopped" && !c.stopped_by_user)) && !c.spec.auto_remove
+ }
+ 
++/// `--network container:<id>` or `ns:<path>`: a network namespace that is
++/// not the container's own, so no endpoints, addresses or published ports.
++pub(super) fn shares_netns(mode: &str) -> bool {
++    mode.starts_with("container:") || mode.starts_with("ns:")
++}
++
+ /// Containers that join another's network or link to others start after
+ /// those, as Docker orders them.
+ fn joins_others(c: &Container) -> bool {
+@@ -3651,6 +3661,19 @@ mod net_opts_tests {
+         .unwrap();
+         assert!(super::net_opts(&old, None, "").is_empty());
+     }
++
++    #[test]
++    fn a_namespace_path_reaches_the_guest() {
++        let spec: super::Spec = serde_json::from_value(serde_json::json!({
++            "image": "alpine", "image_id": "sha256:x", "entrypoint": [], "cmd": ["sh"], "env": [], "cwd": "", "user": "",
++            "auto_remove": false, "network_mode": "ns:/run/netns/pod", "labels": {}, "dns": ["10.0.0.53"],
++        }))
++        .unwrap();
++        assert_eq!(super::net_opts(&spec, None, ""), ["netns_path=/run/netns/pod", "nameserver=10.0.0.53"]);
++        assert!(super::shares_netns(&spec.network_mode));
++        assert!(super::shares_netns("container:abc"));
++        assert!(!super::shares_netns("bridge") && !super::shares_netns("none") && !super::shares_netns("host"));
++    }
+ }
+ 
+ /// A passed-through USB device keeps the VM awake: sleeping would unplug it.
+-- 
+2.47.3
+
