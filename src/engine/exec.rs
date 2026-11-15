@@ -71,16 +71,54 @@ type Output =
     Pin<Box<dyn Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>> + Send>>;
 type Input = Pin<Box<dyn AsyncWrite + Send>>;
 
+/// How an attached session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// The container's output closed.
+    Finished,
+    /// This process got a terminating signal (name as the engine takes it).
+    Signal(&'static str),
+}
+
+/// Waits for a signal, or forever when it could not be installed.
+async fn recv_opt(s: &mut Option<tokio::signal::unix::Signal>) {
+    match s {
+        Some(s) => {
+            s.recv().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Waits for SIGTERM, SIGHUP, or SIGINT (only without a TTY: in raw mode
+/// Ctrl-C reaches the container as a byte).
+async fn terminating_signal(tty: bool) -> &'static str {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate()).ok();
+    let mut hup = signal(SignalKind::hangup()).ok();
+    let mut int = if tty {
+        None
+    } else {
+        signal(SignalKind::interrupt()).ok()
+    };
+    tokio::select! {
+        _ = recv_opt(&mut term) => "SIGTERM",
+        _ = recv_opt(&mut hup) => "SIGHUP",
+        _ = recv_opt(&mut int) => "SIGINT",
+    }
+}
+
 /// Wires an attached stream to this process's stdio until the output
-/// ends. `resize` is called with (rows, columns) at the start and on every
-/// window change when a TTY is in use.
+/// ends or a terminating signal arrives. `resize` is called with (rows,
+/// columns) at the start and on every window change when a TTY is in use.
+/// The terminal is restored on every path.
 async fn pump<R, F>(
     mut output: Output,
     mut input: Input,
     tty: bool,
     interactive: bool,
     resize: R,
-) -> Result<()>
+) -> Result<Ended>
 where
     R: Fn(u16, u16) -> F + Send + Sync + 'static,
     F: Future<Output = ()> + Send,
@@ -114,7 +152,20 @@ where
     let mut out = tokio::io::stdout();
     let mut err = tokio::io::stderr();
     let mut failure = None;
-    while let Some(chunk) = output.next().await {
+    let mut ended = Ended::Finished;
+    let signalled = terminating_signal(tty);
+    tokio::pin!(signalled);
+    loop {
+        let chunk = tokio::select! {
+            c = output.next() => c,
+            sig = &mut signalled => {
+                ended = Ended::Signal(sig);
+                break;
+            }
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         match chunk {
             Ok(LogOutput::StdErr { message }) => {
                 let _ = err.write_all(&message).await;
@@ -138,7 +189,16 @@ where
     if let Some(t) = stdin_task {
         t.abort();
     }
-    failure.map_or(Ok(()), Err)
+    failure.map_or(Ok(ended), Err)
+}
+
+/// Turns an engine exit code into a process exit status: 0 to 255, with
+/// anything outside that range (or unknown) reported as a failure.
+pub fn exit_status(code: i64) -> i32 {
+    match i32::try_from(code) {
+        Ok(c) if (0..=255).contains(&c) => c,
+        _ => 255,
+    }
 }
 
 /// What `gantry run` changes in a service's create body.
@@ -227,7 +287,7 @@ impl Engine {
             return Err(Error::engine("exec: the engine did not attach"));
         };
         let (rd, rid) = (d.clone(), id.clone());
-        pump(output, input, req.tty, req.interactive, move |h, w| {
+        let ended = pump(output, input, req.tty, req.interactive, move |h, w| {
             let (d, id) = (rd.clone(), rid.clone());
             async move {
                 let opts = ResizeExecOptions {
@@ -238,11 +298,23 @@ impl Engine {
             }
         })
         .await?;
-        let info = d
-            .inspect_exec(&id)
-            .await
-            .map_err(|e| self.err("exec inspect", e))?;
-        Ok(info.exit_code.unwrap_or(0))
+        if let Ended::Signal(sig) = ended {
+            return Err(Error::engine(format!("exec interrupted by {sig}")));
+        }
+        // The exit code can trail the end of the output by a moment.
+        for _ in 0..50 {
+            let info = d
+                .inspect_exec(&id)
+                .await
+                .map_err(|e| self.err("exec inspect", e))?;
+            if info.running != Some(true) {
+                if let Some(code) = info.exit_code {
+                    return Ok(code);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Err(Error::engine("exec: the engine reported no exit code"))
     }
 
     /// Creates a one-off container, attaches to it, starts it, and returns
@@ -252,12 +324,12 @@ impl Engine {
         &self,
         name: &str,
         body: ContainerCreateBody,
-        tty: bool,
-        interactive: bool,
+        platform: Option<&str>,
+        req: &RunRequest,
         rm: bool,
     ) -> Result<i64> {
-        self.create(name, body).await?;
-        let code = self.attach_and_wait(name, tty, interactive).await;
+        self.create(name, body, platform).await?;
+        let code = self.attach_and_wait(name, req.tty, req.interactive).await;
         if rm {
             let _ = self.remove(name).await;
         }
@@ -280,11 +352,12 @@ impl Engine {
             )
             .await
             .map_err(|e| self.err(&format!("attach {name}"), e))?;
-        // Wait for the exit before starting so a fast exit is not missed.
+        // The wait request goes out on its first poll, after the output ends;
+        // the default condition (not running) also covers a fast exit.
         let mut waiter = d.wait_container(name, None::<WaitContainerOptions>);
         self.start(name).await?;
         let (rd, rname) = (d.clone(), name.to_string());
-        pump(
+        let ended = pump(
             attached.output,
             attached.input,
             tty,
@@ -301,6 +374,12 @@ impl Engine {
             },
         )
         .await?;
+        if let Ended::Signal(sig) = ended {
+            // Pass the signal on and give the container its grace period.
+            let _ = self.kill(name, sig).await;
+            let _ = self.stop(name, None).await;
+            return Err(Error::engine(format!("{name}: interrupted by {sig}")));
+        }
         match waiter.next().await {
             Some(Ok(r)) => Ok(r.status_code),
             // bollard reports a non-zero exit as an error carrying the code.

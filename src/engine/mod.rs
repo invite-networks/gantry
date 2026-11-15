@@ -222,6 +222,14 @@ impl Engine {
                         "docker has no {DOCKER_RUNTIME:?} runtime; run `gantry setup docker` once on this host"
                     )));
                 }
+                // Pod namespaces reach the shim through HostConfig.Annotations,
+                // which older API versions silently drop.
+                let v = d.client_version();
+                if (v.major_version, v.minor_version) < (1, 43) {
+                    return Err(Error::engine(format!(
+                        "docker API {v} is too old; Gantry needs 1.43 or later (Docker 24+)"
+                    )));
+                }
                 Ok(())
             }
             _ => d.ping().await.map(drop).map_err(|e| self.err("ping", e)),
@@ -229,24 +237,30 @@ impl Engine {
     }
 
     pub async fn image_exists(&self, image: &str) -> Result<bool> {
+        Ok(self.image_id(image).await?.is_some())
+    }
+
+    /// The local image's ID, or None when it is not present.
+    pub async fn image_id(&self, image: &str) -> Result<Option<String>> {
         let image = qualify_image(self.kind, image);
         match self.docker().await?.inspect_image(&image).await {
-            Ok(_) => Ok(true),
-            Err(e) if not_found(&e) => Ok(false),
+            Ok(i) => Ok(Some(i.id.unwrap_or_default())),
+            Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(self.err(&format!("image {image}"), e)),
         }
     }
 
     /// Pulls an image, with registry credentials from the usual auth
     /// files when there are any.
-    pub async fn pull(&self, image: &str) -> Result<()> {
+    pub async fn pull(&self, image: &str, platform: Option<&str>) -> Result<()> {
         let image = qualify_image(self.kind, image);
         let (name, tag) = auth::split_reference(&image);
-        let creds = auth::credentials_for(self.kind, &name);
+        let creds = auth::credentials_for(self.kind, &name).await;
         let d = self.docker().await?;
         let opts = CreateImageOptions {
             from_image: Some(name.clone()),
             tag: Some(tag.clone()),
+            platform: platform.unwrap_or_default().to_string(),
             ..Default::default()
         };
         let mut stream = d.create_image(Some(opts), None, creds);
@@ -268,13 +282,31 @@ impl Engine {
         if !last.is_empty() {
             tracing::debug!("{image}: {last}");
         }
+        // Some engines report a failed pull only in fields this client does
+        // not model, so confirm the image is really there.
+        if self.image_id(&image).await?.is_none() {
+            return Err(Error::engine(format!(
+                "{} pull {image}: the engine reported no error but the image is not present{}",
+                self.kind,
+                if last.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (last status: {last})")
+                }
+            )));
+        }
         Ok(())
     }
 
-    pub async fn create(&self, name: &str, body: ContainerCreateBody) -> Result<String> {
+    pub async fn create(
+        &self,
+        name: &str,
+        body: ContainerCreateBody,
+        platform: Option<&str>,
+    ) -> Result<String> {
         let opts = CreateContainerOptions {
             name: Some(name.to_string()),
-            ..Default::default()
+            platform: platform.unwrap_or_default().to_string(),
         };
         let r = self
             .docker()
@@ -315,9 +347,12 @@ impl Engine {
         }
     }
 
+    /// Force-removes a container and its anonymous volumes. Named volumes
+    /// and bind mounts are untouched.
     pub async fn remove(&self, name: &str) -> Result<()> {
         let opts = RemoveContainerOptions {
             force: true,
+            v: true,
             ..Default::default()
         };
         match self
@@ -561,6 +596,23 @@ async fn start_podman_service(default: &std::path::Path) -> Result<PathBuf> {
         return Ok(private);
     }
     state::ensure_dir(&state::run_dir())?;
+    // Serialize starters so two commands do not delete each other's socket.
+    let lock_path = state::run_dir().join("podman.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| Error::engine(format!("{}: {e}", lock_path.display())))?;
+    let _lock = tokio::task::spawn_blocking(move || {
+        nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusive)
+    })
+    .await
+    .map_err(|e| Error::engine(format!("podman lock: {e}")))?
+    .map_err(|(_, e)| Error::engine(format!("podman lock: {e}")))?;
+    if socket_alive(&private).await {
+        return Ok(private);
+    }
     let _ = std::fs::remove_file(&private);
     tracing::info!(
         "starting a private podman API service at {}",

@@ -128,11 +128,8 @@ impl Netlink {
                 b.build()
             }
         };
-        self.handle
-            .link()
-            .add(msg)
-            .execute()
-            .await
+        let result = self.handle.link().add(msg).execute().await;
+        result
             .map_err(|e| {
                 let busy = matches!(&e, rtnetlink::Error::NetlinkError(m) if m.raw_code() == -libc::EBUSY);
                 if busy {
@@ -154,10 +151,29 @@ impl Netlink {
         self.set_up(index).await
     }
 
+    /// Brings a link up. A pod recreated right after `down` can race the
+    /// kernel, which tears down the old namespace's links asynchronously:
+    /// until then the old macvlan still holds the pod's stable MAC, and
+    /// bringing the new one up fails with EADDRINUSE. Retry for a while.
     pub async fn set_up(&self, index: u32) -> Result<()> {
-        let msg = LinkUnspec::new_with_index(index).up().build();
-        self.handle.link().set(msg).execute().await?;
-        Ok(())
+        let mut tries = 0;
+        loop {
+            let msg = LinkUnspec::new_with_index(index).up().build();
+            match self.handle.link().set(msg).execute().await {
+                Ok(()) => return Ok(()),
+                Err(rtnetlink::Error::NetlinkError(m))
+                    if m.raw_code() == -libc::EADDRINUSE && tries < 100 =>
+                {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    return Err(Error::network(format!(
+                        "bring up link {index}: {e} (another macvlan on the parent may use the same MAC address)"
+                    )));
+                }
+            }
+        }
     }
 
     pub async fn add_address(&self, index: u32, addr: IpNet) -> Result<()> {

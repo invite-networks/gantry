@@ -285,6 +285,13 @@ enum InternalCmd {
 }
 
 fn main() -> ExitCode {
+    // Exit quietly when stdout is a closed pipe (`gantry ps | head`) instead
+    // of panicking in println!.
+    // SAFETY: setting a signal disposition to the default before any other
+    // thread exists.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     let filter = tracing_subscriber::EnvFilter::try_new(format!("gantry={}", cli.global.log_level))
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("gantry=info"));
@@ -318,7 +325,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             eprintln!("gantry: {e}");
-            ExitCode::from(1)
+            // Exit without dropping the runtime: an interactive session may
+            // have left a stdin read blocked that would hold up shutdown.
+            std::process::exit(1);
         }
     }
 }
@@ -531,11 +540,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 interactive: tty || !std::io::stdin().is_terminal(),
                 user,
                 workdir,
-                env,
+                env: expand_env(env),
             };
             let code = o.engine(svc.runtime).exec(&svc.container_name, req).await?;
             // Exit directly: the stdin reader may still be blocked in a read.
-            std::process::exit(i32::try_from(code.clamp(0, 255)).unwrap_or(1));
+            std::process::exit(gantry::engine::exec::exit_status(code));
         }
         Cmd::Run {
             rm,
@@ -560,11 +569,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 interactive: tty || !stdin_tty,
                 user,
                 workdir,
-                env,
+                env: expand_env(env),
             };
             let code = o.run_oneoff(&service, &req, name, rm, no_deps).await?;
             // Exit directly: the stdin reader may still be blocked in a read.
-            std::process::exit(i32::try_from(code.clamp(0, 255)).unwrap_or(1));
+            std::process::exit(gantry::engine::exec::exit_status(code));
         }
         Cmd::Kill { signal, services } => {
             require_root()?;
@@ -655,7 +664,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 async move {
                     println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
                     let t = std::time::Instant::now();
-                    o.engine(svc.runtime).pull(&svc.image).await?;
+                    o.engine(svc.runtime)
+                        .pull(&svc.image, svc.platform.as_deref())
+                        .await?;
                     println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
                     Ok::<(), Error>(())
                 }
@@ -756,7 +767,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 async fn ps(o: &Orchestrator) -> Result<()> {
-    let containers = o.containers().await;
+    let containers = o.containers().await?;
     let mut rows = vec![
         ["SERVICE", "POD", "RUNTIME", "STATE", "CONTAINER"]
             .map(String::from)
@@ -836,6 +847,20 @@ fn pod_list(o: &Orchestrator) {
         }
     }
     print_table(&rows);
+}
+
+/// `-e KEY` takes the value from this environment, as the Docker CLI
+/// does; a key that is not set is dropped.
+fn expand_env(env: Vec<String>) -> Vec<String> {
+    env.into_iter()
+        .filter_map(|e| {
+            if e.contains('=') {
+                Some(e)
+            } else {
+                std::env::var(&e).ok().map(|v| format!("{e}={v}"))
+            }
+        })
+        .collect()
 }
 
 /// Projects with a saved snapshot under the run directory.

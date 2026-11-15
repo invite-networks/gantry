@@ -1253,9 +1253,13 @@ fn service(
         build,
         logging,
         platform: s.platform.clone(),
-        container_name: s
-            .container_name
-            .unwrap_or_else(|| format!("{project}-{name}-1")),
+        container_name: match s.container_name {
+            Some(c) => {
+                check_container_name(&c).map_err(err)?;
+                c
+            }
+            None => format!("{project}-{name}-1"),
+        },
         command: split(s.command, "command")?,
         entrypoint: split(s.entrypoint, "entrypoint")?,
         environment,
@@ -1310,6 +1314,22 @@ fn service(
         expose,
         profiles: s.profiles.unwrap_or_default(),
     })
+}
+
+/// Container names as the engines accept them: `[A-Za-z0-9][A-Za-z0-9_.-]*`.
+/// They also end up in API paths, so nothing else may pass.
+fn check_container_name(c: &str) -> std::result::Result<(), String> {
+    let mut chars = c.chars();
+    let ok = c.len() <= 253
+        && chars.next().is_some_and(|f| f.is_ascii_alphanumeric())
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "container_name {c:?} must start with a letter or digit and contain only letters, digits, '_', '.' and '-'"
+        ))
+    }
 }
 
 fn build_spec(
@@ -1629,6 +1649,10 @@ mod tests {
             (
                 "name: t\nservices:\n  a: { build: \"https://example.com/r.git\" }\n",
                 "remote build contexts",
+            ),
+            (
+                "name: t\nservices:\n  a: { image: x, network_mode: none, container_name: \"a/../b\" }\n",
+                "container_name",
             ),
             (
                 "name: t\nbogus: 1\nservices: {}\n",

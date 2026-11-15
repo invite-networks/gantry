@@ -6,9 +6,9 @@ use crate::project::RuntimeKind;
 use base64::Engine as _;
 use bollard::auth::DockerCredentials;
 use serde_json::Value;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
 
 /// Splits an image reference into the repository and the tag or digest
 /// (`latest` when neither is given).
@@ -26,11 +26,12 @@ pub fn split_reference(image: &str) -> (String, String) {
     }
 }
 
-/// The registry host an image comes from; `docker.io` for bare names.
+/// The registry host an image comes from; `docker.io` for bare names and
+/// for Docker Hub's other host names.
 pub fn registry_of(name: &str) -> String {
     match name.split_once('/') {
         Some((first, _)) if first.contains('.') || first.contains(':') || first == "localhost" => {
-            first.to_string()
+            key_host(first)
         }
         _ => "docker.io".to_string(),
     }
@@ -81,7 +82,7 @@ fn auth_files(kind: RuntimeKind) -> Vec<PathBuf> {
 
 /// Credentials for the registry `name` is pulled from, if any auth file
 /// has them.
-pub fn credentials_for(kind: RuntimeKind, name: &str) -> Option<DockerCredentials> {
+pub async fn credentials_for(kind: RuntimeKind, name: &str) -> Option<DockerCredentials> {
     let registry = registry_of(name);
     for file in auth_files(kind) {
         let Ok(text) = std::fs::read_to_string(&file) else {
@@ -91,23 +92,35 @@ pub fn credentials_for(kind: RuntimeKind, name: &str) -> Option<DockerCredential
             tracing::warn!("{}: not valid JSON, ignored", file.display());
             continue;
         };
-        if let Some(c) = from_config(&cfg, &registry) {
-            return Some(c);
+        match lookup(&cfg, &registry) {
+            Lookup::Found(c) => return Some(c),
+            Lookup::Helper(h) => {
+                if let Some(c) = from_helper(&h, &registry).await {
+                    return Some(c);
+                }
+            }
+            Lookup::None => {}
         }
     }
     None
 }
 
-fn from_config(cfg: &Value, registry: &str) -> Option<DockerCredentials> {
-    // A per-registry helper wins, then the static entry, then the default
-    // credential store.
+enum Lookup {
+    Found(DockerCredentials),
+    Helper(String),
+    None,
+}
+
+/// What an auth file says about a registry: a per-registry helper wins,
+/// then the static entry, then the default credential store.
+fn lookup(cfg: &Value, registry: &str) -> Lookup {
     if let Some(helper) = cfg
         .get("credHelpers")
         .and_then(Value::as_object)
         .and_then(|m| m.iter().find(|(k, _)| key_host(k) == registry))
         .and_then(|(_, v)| v.as_str())
     {
-        return from_helper(helper, registry);
+        return Lookup::Helper(helper.to_string());
     }
     if let Some((key, entry)) = cfg
         .get("auths")
@@ -115,13 +128,29 @@ fn from_config(cfg: &Value, registry: &str) -> Option<DockerCredentials> {
         .and_then(|m| m.iter().find(|(k, _)| key_host(k) == registry))
     {
         if let Some(c) = from_entry(key, entry) {
-            return Some(c);
+            return Lookup::Found(c);
         }
     }
-    cfg.get("credsStore")
-        .and_then(Value::as_str)
-        .and_then(|h| from_helper(h, registry))
+    match cfg.get("credsStore").and_then(Value::as_str) {
+        Some(h) => Lookup::Helper(h.to_string()),
+        None => Lookup::None,
+    }
 }
+
+#[cfg(test)]
+fn from_config(cfg: &Value, registry: &str) -> Option<DockerCredentials> {
+    match lookup(cfg, registry) {
+        Lookup::Found(c) => Some(c),
+        _ => None,
+    }
+}
+
+/// Where credential helpers are looked up. Gantry runs as root, so it does
+/// not search the caller's PATH.
+const HELPER_DIRS: &[&str] = &["/usr/local/bin", "/usr/bin", "/bin"];
+
+/// How long a credential helper may take.
+const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn from_entry(key: &str, entry: &Value) -> Option<DockerCredentials> {
     let s = |k: &str| entry.get(k).and_then(Value::as_str).map(str::to_string);
@@ -152,7 +181,7 @@ fn from_entry(key: &str, entry: &Value) -> Option<DockerCredentials> {
 }
 
 /// Asks `docker-credential-<helper>` for a registry's credentials.
-fn from_helper(helper: &str, registry: &str) -> Option<DockerCredentials> {
+async fn from_helper(helper: &str, registry: &str) -> Option<DockerCredentials> {
     if !helper
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
@@ -160,20 +189,34 @@ fn from_helper(helper: &str, registry: &str) -> Option<DockerCredentials> {
         tracing::warn!("ignoring credential helper with an unexpected name: {helper:?}");
         return None;
     }
+    let bin = HELPER_DIRS
+        .iter()
+        .map(|d| PathBuf::from(d).join(format!("docker-credential-{helper}")))
+        .find(|p| p.is_file())?;
     let server = if registry == "docker.io" {
         "https://index.docker.io/v1/".to_string()
     } else {
         registry.to_string()
     };
-    let mut child = Command::new(format!("docker-credential-{helper}"))
+    let mut child = tokio::process::Command::new(&bin)
         .arg("get")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(server.as_bytes()).ok()?;
-    let out = child.wait_with_output().ok()?;
+    let mut stdin = child.stdin.take()?;
+    stdin.write_all(server.as_bytes()).await.ok()?;
+    drop(stdin);
+    let out = match tokio::time::timeout(HELPER_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(_)) => return None,
+        Err(_) => {
+            tracing::warn!("credential helper {} timed out", bin.display());
+            return None;
+        }
+    };
     if !out.status.success() {
         return None;
     }
@@ -227,6 +270,7 @@ mod tests {
         assert_eq!(registry_of("ghcr.io/a/b"), "ghcr.io");
         assert_eq!(registry_of("localhost:5000/a"), "localhost:5000");
         assert_eq!(key_host("https://index.docker.io/v1/"), "docker.io");
+        assert_eq!(registry_of("index.docker.io/library/alpine"), "docker.io");
     }
 
     #[test]

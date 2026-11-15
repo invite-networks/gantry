@@ -1,6 +1,7 @@
 //! The commands: bringing pods and their services up and down in order.
 
 use crate::engine::exec::{RunRequest, oneoff_body};
+use crate::engine::spec::grace_secs;
 use crate::engine::{ContainerInfo, Engine, create_spec, hash_of};
 use crate::errors::{Context, Error, Result};
 use crate::pod::{self, Ensured, state};
@@ -72,9 +73,10 @@ impl Orchestrator {
         self.all.clone()
     }
 
-    /// Every container of this project, across all engines that answer.
-    /// Engines are queried in parallel.
-    pub async fn containers(&self) -> Vec<(Engine, ContainerInfo)> {
+    /// Every container of this project, across all engines, queried in
+    /// parallel. An engine the project uses must answer; engines it does
+    /// not use are skipped when they are down.
+    pub async fn containers(&self) -> Result<Vec<(Engine, ContainerInfo)>> {
         let engines = self.all_engines();
         let name = &self.project.name;
         let results = futures_util::future::join_all(engines.iter().map(|e| async move {
@@ -89,11 +91,50 @@ impl Orchestrator {
             let used = self.engines.contains_key(&e.kind);
             match r {
                 Ok(list) => out.extend(list.into_iter().map(|c| (e.clone(), c))),
-                Err(err) if used => tracing::warn!("{err}"),
+                Err(err) if used => return Err(err),
                 Err(_) => {}
             }
         }
-        out
+        Ok(out)
+    }
+
+    /// Whether a pod exists and its shape differs from the project (or its
+    /// namespace is gone), so that `ensure_pods` will recreate it.
+    fn pod_changed(&self, pod_name: &str) -> Result<bool> {
+        let Some(pod) = self.project.pods.get(pod_name) else {
+            return Ok(false);
+        };
+        let hash = pod::config_hash(&self.project, pod);
+        Ok(state::PodState::load(&self.project.name, pod_name)?
+            .is_some_and(|s| s.config_hash != hash || !pod::ns::is_pinned(&s.netns)))
+    }
+
+    /// The services to bring up: the selection and its dependencies, plus
+    /// every service of a selected pod that is about to be recreated, since
+    /// recreating a pod removes all of its containers.
+    fn up_order(&self, selected: &[String]) -> Result<Vec<String>> {
+        let order = self.start_order(selected)?;
+        if selected.is_empty() {
+            return Ok(order);
+        }
+        let mut changed: IndexSet<String> = IndexSet::new();
+        for name in &order {
+            let pod = &self.project.services[name].pod;
+            if self.pod_changed(pod)? {
+                changed.insert(pod.clone());
+            }
+        }
+        if changed.is_empty() {
+            return Ok(order);
+        }
+        let mut wanted: Vec<String> = order.clone();
+        for (name, svc) in &self.project.services {
+            if changed.contains(&svc.pod) && !wanted.contains(name) {
+                println!("Including {name}: pod {} is being recreated", svc.pod);
+                wanted.push(name.clone());
+            }
+        }
+        self.start_order(&wanted)
     }
 
     /// The selected services plus everything they depend on, in start order.
@@ -157,7 +198,7 @@ impl Orchestrator {
     }
 
     pub async fn up(&self, opts: &UpOptions) -> Result<()> {
-        let order = self.start_order(&opts.services)?;
+        let order = self.up_order(&opts.services)?;
         let used: Vec<&Engine> = self
             .engines
             .values()
@@ -179,13 +220,10 @@ impl Orchestrator {
             .iter()
             .map(|s| self.project.services[s].pod.clone())
             .collect();
-        let existing: Vec<(Engine, ContainerInfo)> = self
-            .containers()
-            .await
-            .into_iter()
-            .filter(|(_, c)| !c.oneoff)
-            .collect();
-        let states = self.ensure_pods(&pods, &existing).await?;
+        let all = self.containers().await?;
+        let states = self.ensure_pods(&pods, &all).await?;
+        let existing: Vec<(Engine, ContainerInfo)> =
+            all.into_iter().filter(|(_, c)| !c.oneoff).collect();
 
         let timeout = opts.wait_timeout.unwrap_or(Duration::from_secs(300));
         let states = &states;
@@ -218,7 +256,8 @@ impl Orchestrator {
 
     /// Creates or keeps the given pods, then refreshes every pod's hosts
     /// file and firewall. Containers of a pod whose shape changed are
-    /// removed first, since they hold the old namespaces.
+    /// removed first, one-off containers included, since they hold the old
+    /// namespaces.
     pub async fn ensure_pods(
         &self,
         pods: &IndexSet<String>,
@@ -231,10 +270,7 @@ impl Orchestrator {
                 .pods
                 .get(pod_name)
                 .ok_or_else(|| Error::config(format!("no such pod {pod_name:?}")))?;
-            let hash = pod::config_hash(&self.project, pod);
-            let changed = state::PodState::load(&self.project.name, pod_name)?
-                .is_some_and(|s| s.config_hash != hash || !pod::ns::is_pinned(&s.netns));
-            if changed {
+            if self.pod_changed(pod_name)? {
                 try_join_all(existing.iter().filter(|(_, c)| &c.pod == pod_name).map(
                     |(e, c)| async move {
                         println!("Removing {} (pod {pod_name} changed)", c.name);
@@ -287,19 +323,20 @@ impl Orchestrator {
             let _lock = lock(&self.project.name)?;
             self.ensure_images(&[service.to_string()], None, false)
                 .await?;
-            let existing: Vec<(Engine, ContainerInfo)> = self
-                .containers()
-                .await
-                .into_iter()
-                .filter(|(_, c)| !c.oneoff)
-                .collect();
+            if self.pod_changed(&svc.pod)? {
+                return Err(Error::State(format!(
+                    "pod {} has changed; run `gantry up` before `run`",
+                    svc.pod
+                )));
+            }
+            let all = self.containers().await?;
             let pods: IndexSet<String> = [svc.pod.clone()].into_iter().collect();
-            let mut states = self.ensure_pods(&pods, &existing).await?;
+            let mut states = self.ensure_pods(&pods, &all).await?;
             states
                 .shift_remove(&svc.pod)
                 .ok_or_else(|| Error::State(format!("pod {} did not come up", svc.pod)))?
         };
-        let body = oneoff_body(create_spec(&self.project, svc, &st), req);
+        let body = oneoff_body(create_spec(&self.project, svc, &st, None), req);
         let name = name.unwrap_or_else(|| {
             format!(
                 "{}-{}-run-{}",
@@ -308,7 +345,7 @@ impl Orchestrator {
                 crate::util::random_id(3)
             )
         });
-        e.run_attached(&name, body, req.tty, req.interactive, rm)
+        e.run_attached(&name, body, svc.platform.as_deref(), req, rm)
             .await
     }
 
@@ -340,13 +377,13 @@ impl Orchestrator {
             let svc = &self.project.services[name];
             let e = self.engine(svc.runtime);
             match self.owned(svc).await? {
-                Some(c) if c.status == "running" => {
-                    println!("{} is running; stop it first or pass --stop", c.name);
-                    Ok::<(), Error>(())
-                }
-                Some(c) => {
+                Some(c) if matches!(c.status.as_str(), "exited" | "created" | "dead") => {
                     println!("Removing {}", c.name);
                     e.remove(&c.name).await
+                }
+                Some(c) => {
+                    println!("{} is {}; stop it first or pass --stop", c.name, c.status);
+                    Ok::<(), Error>(())
                 }
                 None => Ok(()),
             }
@@ -393,12 +430,12 @@ impl Orchestrator {
         pull: Option<PullPolicy>,
         force_build: bool,
     ) -> Result<()> {
-        let mut seen: IndexSet<(RuntimeKind, String)> = IndexSet::new();
+        let mut seen: IndexSet<(RuntimeKind, String, bool)> = IndexSet::new();
         let mut builds: Vec<&Service> = Vec::new();
         let mut pulls: Vec<&Service> = Vec::new();
         for name in order {
             let svc = &self.project.services[name];
-            if !seen.insert((svc.runtime, svc.image.clone())) {
+            if !seen.insert((svc.runtime, svc.image.clone(), svc.build.is_some())) {
                 continue;
             }
             let e = self.engine(svc.runtime);
@@ -430,7 +467,9 @@ impl Orchestrator {
         try_join_all(pulls.iter().map(|svc| async move {
             println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
             let t = std::time::Instant::now();
-            self.engine(svc.runtime).pull(&svc.image).await?;
+            self.engine(svc.runtime)
+                .pull(&svc.image, svc.platform.as_deref())
+                .await?;
             println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
             Ok::<(), Error>(())
         }))
@@ -493,7 +532,8 @@ impl Orchestrator {
         existing: &[(Engine, ContainerInfo)],
     ) -> Result<()> {
         let e = self.engine(svc.runtime);
-        let body = create_spec(&self.project, svc, st);
+        let image_id = e.image_id(&image_ref(svc)).await?;
+        let body = create_spec(&self.project, svc, st, image_id.as_deref());
         let want = hash_of(&body);
 
         // The same container name on another engine (runtime changed).
@@ -520,10 +560,7 @@ impl Orchestrator {
             }
             println!("Recreating {}", svc.container_name);
             let _ = e
-                .stop(
-                    &svc.container_name,
-                    svc.stop_grace_period.map(|d| d.as_secs()),
-                )
+                .stop(&svc.container_name, svc.stop_grace_period.map(grace_secs))
                 .await;
             e.remove(&svc.container_name).await?;
         } else {
@@ -532,7 +569,8 @@ impl Orchestrator {
                 svc.container_name, svc.runtime, svc.pod
             );
         }
-        e.create(&svc.container_name, body).await?;
+        e.create(&svc.container_name, body, svc.platform.as_deref())
+            .await?;
         e.start(&svc.container_name).await
     }
 
@@ -619,7 +657,7 @@ impl Orchestrator {
 
     pub async fn down(&self, volumes: bool, timeout: Option<u64>) -> Result<()> {
         let _lock = lock(&self.project.name)?;
-        let containers = self.containers().await;
+        let containers = self.containers().await?;
         // Reverse dependency levels; containers of unknown services first.
         let order = self.start_order(&[]).unwrap_or_default();
         let mut groups: Vec<Vec<String>> = self.levels(&order);
@@ -635,7 +673,7 @@ impl Orchestrator {
                 .services
                 .get(&c.service)
                 .and_then(|s| s.stop_grace_period)
-                .map(|d| d.as_secs());
+                .map(grace_secs);
             let (e, name) = (e.clone(), c.name.clone());
             async move {
                 println!("Stopping {name}");
@@ -673,7 +711,8 @@ impl Orchestrator {
             }
         }
         let dir = state::project_dir(&self.project.name);
-        let _ = std::fs::remove_file(dir.join("lock"));
+        // The lock file stays: unlinking it while held would let a second
+        // command lock a new file at the same path.
         let _ = std::fs::remove_file(Project::snapshot_path(&self.project.name));
         let _ = std::fs::remove_dir(dir.join("pods"));
         let _ = std::fs::remove_dir(&dir);
@@ -699,7 +738,7 @@ impl Orchestrator {
                     println!("Stopping {}", svc.container_name);
                     e.stop(
                         &svc.container_name,
-                        timeout.or(svc.stop_grace_period.map(|d| d.as_secs())),
+                        timeout.or(svc.stop_grace_period.map(grace_secs)),
                     )
                     .await?;
                 }
@@ -782,9 +821,11 @@ pub fn describe_pod(st: &state::PodState) -> String {
 pub struct Lock(#[allow(dead_code)] nix::fcntl::Flock<std::fs::File>);
 
 pub fn lock(project: &str) -> Result<Lock> {
-    let dir = state::project_dir(project);
+    // Lock files live outside the project directory so `down` can remove
+    // that directory while holding the lock, and are never unlinked.
+    let dir = state::run_dir().join("locks");
     state::ensure_dir(&dir)?;
-    let path = dir.join("lock");
+    let path = dir.join(format!("{project}.lock"));
     let f = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)

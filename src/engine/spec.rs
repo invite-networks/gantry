@@ -41,6 +41,16 @@ pub fn service_image(svc: &Service) -> String {
     qualify_image(svc.runtime, &svc.image)
 }
 
+/// A stop grace period in whole seconds, rounded up so that 500ms does not
+/// become an immediate kill. Zero stays zero.
+pub fn grace_secs(d: Duration) -> u64 {
+    if d.is_zero() {
+        0
+    } else {
+        d.as_secs() + u64::from(d.subsec_nanos() > 0)
+    }
+}
+
 fn nanos(d: Duration) -> i64 {
     i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)
 }
@@ -66,17 +76,27 @@ fn restart_policy(r: &str) -> RestartPolicy {
     }
 }
 
+/// Parses `host[:container][:perms]`; `host:perms` is accepted too, as the
+/// Docker CLI does.
 fn device(spec: &str) -> DeviceMapping {
-    let mut parts = spec.splitn(3, ':');
-    let host = parts.next().unwrap_or("").to_string();
-    let container = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .map_or_else(|| host.clone(), str::to_string);
+    let is_perms = |p: &str| !p.is_empty() && p.chars().all(|c| matches!(c, 'r' | 'w' | 'm'));
+    let parts: Vec<&str> = spec.splitn(3, ':').collect();
+    let (host, container, perms) = match parts.as_slice() {
+        [h] => (*h, *h, "rwm"),
+        [h, p] if is_perms(p) => (*h, *h, *p),
+        [h, c] => (*h, *c, "rwm"),
+        [h, c, p] => (*h, *c, *p),
+        _ => (spec, spec, "rwm"),
+    };
+    let container = if container.is_empty() {
+        host
+    } else {
+        container
+    };
     DeviceMapping {
-        path_on_host: Some(host),
-        path_in_container: Some(container),
-        cgroup_permissions: Some(parts.next().unwrap_or("rwm").to_string()),
+        path_on_host: Some(host.to_string()),
+        path_in_container: Some(container.to_string()),
+        cgroup_permissions: Some(perms.to_string()),
     }
 }
 
@@ -91,7 +111,14 @@ pub fn joins_uts_ipc(kind: RuntimeKind) -> bool {
 
 /// Builds the create body for a service in its pod. The config hash label
 /// is computed over everything else and added last.
-pub fn create_spec(project: &Project, svc: &Service, pod: &PodState) -> ContainerCreateBody {
+/// `image_id` is the local image the container will run; it goes into the
+/// config hash so a rebuilt or newly pulled image recreates the container.
+pub fn create_spec(
+    project: &Project,
+    svc: &Service,
+    pod: &PodState,
+    image_id: Option<&str>,
+) -> ContainerCreateBody {
     let mut labels: HashMap<String, String> = svc
         .labels
         .iter()
@@ -117,7 +144,7 @@ pub fn create_spec(project: &Project, svc: &Service, pod: &PodState) -> Containe
         stop_signal: svc.stop_signal.clone(),
         stop_timeout: svc
             .stop_grace_period
-            .map(|d| i64::try_from(d.as_secs().max(1)).unwrap_or(i64::MAX)),
+            .map(|d| i64::try_from(grace_secs(d)).unwrap_or(i64::MAX)),
         cmd: svc.command.clone(),
         // An empty entrypoint clears the image's.
         entrypoint: svc.entrypoint.clone().map(
@@ -274,18 +301,42 @@ pub fn create_spec(project: &Project, svc: &Service, pod: &PodState) -> Containe
     body.host_config = Some(host);
 
     body.labels = Some(labels);
-    let hash = config_hash(&body, svc.platform.as_deref());
+    let hash = config_hash(&body, svc.platform.as_deref(), image_id);
     if let Some(l) = body.labels.as_mut() {
         l.insert(LABEL_HASH.into(), hash);
     }
     body
 }
 
-/// A stable hash of the create body: maps are serialized with sorted keys.
-fn config_hash(body: &ContainerCreateBody, platform: Option<&str>) -> String {
+/// Lists whose order carries no meaning; sorted before hashing so that
+/// reordering them in the project file does not recreate the container.
+const UNORDERED: &[&str] = &[
+    "/Env",
+    "/Volumes",
+    "/HostConfig/Binds",
+    "/HostConfig/CapAdd",
+    "/HostConfig/CapDrop",
+    "/HostConfig/SecurityOpt",
+    "/HostConfig/GroupAdd",
+    "/HostConfig/Devices",
+    "/HostConfig/Ulimits",
+];
+
+/// A stable hash of the create body, the platform and the image ID: maps
+/// are serialized with sorted keys and unordered lists are sorted.
+fn config_hash(
+    body: &ContainerCreateBody,
+    platform: Option<&str>,
+    image_id: Option<&str>,
+) -> String {
     let mut v = serde_json::to_value(body).unwrap_or(Value::Null);
     sort_keys(&mut v);
-    let text = serde_json::to_string(&(v, platform)).unwrap_or_default();
+    for path in UNORDERED {
+        if let Some(Value::Array(a)) = v.pointer_mut(path) {
+            a.sort_by_key(|x| x.to_string());
+        }
+    }
+    let text = serde_json::to_string(&(v, platform, image_id)).unwrap_or_default();
     crate::util::hash_hex(text.as_bytes())
 }
 
@@ -378,7 +429,7 @@ services:
     #[test]
     fn docker_spec() {
         let p = project("docker");
-        let b = create_spec(&p, &p.services["app"], &state(true));
+        let b = create_spec(&p, &p.services["app"], &state(true), None);
         let h = b.host_config.as_ref().unwrap();
         assert_eq!(h.runtime.as_deref(), Some("gantry"));
         assert_eq!(h.network_mode.as_deref(), Some("none"));
@@ -416,7 +467,7 @@ services:
     fn podman_and_kiri_spec() {
         for rt in ["podman", "kiri"] {
             let p = project(rt);
-            let b = create_spec(&p, &p.services["app"], &state(true));
+            let b = create_spec(&p, &p.services["app"], &state(true), None);
             let h = b.host_config.as_ref().unwrap();
             assert_eq!(h.network_mode.as_deref(), Some("ns:/run/netns/gt-demo-web"));
             assert_eq!(
@@ -431,7 +482,7 @@ services:
         }
         // Without a shared UTS namespace the hostname is set directly.
         let p = project("podman");
-        let b = create_spec(&p, &p.services["app"], &state(false));
+        let b = create_spec(&p, &p.services["app"], &state(false), None);
         assert_eq!(b.hostname.as_deref(), Some("web"));
         let binds = b.host_config.unwrap().binds.unwrap();
         assert!(!binds.iter().any(|s| s.contains("/etc/hostname")));
@@ -451,6 +502,18 @@ services:
                 .context
                 .ends_with("src")
         );
+    }
+
+    #[test]
+    fn devices() {
+        let d = device("/dev/net/tun:rwm");
+        assert_eq!(d.path_in_container.as_deref(), Some("/dev/net/tun"));
+        assert_eq!(d.cgroup_permissions.as_deref(), Some("rwm"));
+        let d = device("/dev/sda:/dev/xvda:r");
+        assert_eq!(d.path_in_container.as_deref(), Some("/dev/xvda"));
+        assert_eq!(d.cgroup_permissions.as_deref(), Some("r"));
+        let d = device("/dev/fuse");
+        assert_eq!(d.path_in_container.as_deref(), Some("/dev/fuse"));
     }
 
     #[test]
@@ -477,12 +540,22 @@ services:
     #[test]
     fn hash_is_stable_and_tracks_changes() {
         let p = project("docker");
-        let a = create_spec(&p, &p.services["app"], &state(true));
-        let again = create_spec(&p, &p.services["app"], &state(true));
+        let a = create_spec(&p, &p.services["app"], &state(true), None);
+        let again = create_spec(&p, &p.services["app"], &state(true), None);
         assert_eq!(hash_of(&a), hash_of(&again));
         let mut st = state(true);
         st.id = "other".into();
-        let b = create_spec(&p, &p.services["app"], &st);
+        let b = create_spec(&p, &p.services["app"], &st, None);
         assert_ne!(hash_of(&a), hash_of(&b));
+        // A different image ID (rebuild, newer pull) changes the hash.
+        let c = create_spec(&p, &p.services["app"], &state(true), Some("sha256:1"));
+        assert_ne!(hash_of(&a), hash_of(&c));
+        // Reordering the environment does not.
+        let mut svc = p.services["app"].clone();
+        svc.environment.insert("Z".into(), "9".into());
+        let d1 = create_spec(&p, &svc, &state(true), None);
+        svc.environment.move_index(svc.environment.len() - 1, 0);
+        let d2 = create_spec(&p, &svc, &state(true), None);
+        assert_eq!(hash_of(&d1), hash_of(&d2));
     }
 }

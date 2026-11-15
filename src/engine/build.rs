@@ -115,7 +115,11 @@ impl Engine {
             }
         };
         cmd.args(&args).stdin(Stdio::null()).kill_on_drop(true);
-        let status = cmd.status().await.map_err(|e| {
+        let status = cmd.status().await;
+        if let Some(p) = &inline {
+            let _ = std::fs::remove_file(p);
+        }
+        let status = status.map_err(|e| {
             Error::engine(format!(
                 "{}: building {} needs the {} CLI: {e}",
                 svc.name,
@@ -127,9 +131,6 @@ impl Engine {
                 }
             ))
         })?;
-        if let Some(p) = inline {
-            let _ = std::fs::remove_file(p);
-        }
         if status.success() {
             Ok(())
         } else {
