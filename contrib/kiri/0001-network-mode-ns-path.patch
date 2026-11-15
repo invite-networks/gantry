@@ -1,7 +1,8 @@
 From 85366eec0f6ec4cf81a6044b09aad258eace92c1 Mon Sep 17 00:00:00 2001
 From: Adam Asay <aasay@users.noreply.github.com>
 Date: Sat, 14 Nov 2026 23:26:16 -0700
-Subject: [PATCH] Network mode ns:<path>: join an existing network namespace
+Subject: [PATCH 1/2] Network mode ns:<path>: join an existing network
+ namespace
 
 Accept Podman's --network ns:<absolute path> (for example a namespace
 made with ip netns add at /run/netns/<name>). The container joins that
