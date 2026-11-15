@@ -654,7 +654,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 let o = &o;
                 async move {
                     println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
-                    o.engine(svc.runtime).pull(&svc.image).await
+                    let t = std::time::Instant::now();
+                    o.engine(svc.runtime).pull(&svc.image).await?;
+                    println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
+                    Ok::<(), Error>(())
                 }
             }))
             .await?;
