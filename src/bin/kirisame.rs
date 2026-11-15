@@ -569,7 +569,8 @@ async fn ps(o: &Orchestrator) -> Result<()> {
             .find(|(e, c)| c.service == svc.name && e.kind == svc.runtime);
         let state = match found {
             Some((_, c)) => match &c.health {
-                Some(h) => format!("{} ({h})", c.status),
+                Some(h) if c.status == "running" => format!("{} ({h})", c.status),
+                Some(_) => c.status.clone(),
                 None => c.status.clone(),
             },
             None => "not created".into(),
