@@ -7,7 +7,10 @@
 #        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove] [ipv6]
 #
 # With no arguments it runs docker, podman and dhcp. The dhcp scenario uses
-# an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq.
+# an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq. To
+# lease from a real network's DHCP server instead, set GT_DHCP_PARENT to
+# the parent interface and GT_DHCP_GATEWAY to the gateway the lease hands
+# out (the lease release check is skipped, as the server log is not ours).
 # dhcpmove moves the lab's DHCP pool under a running pod (about a minute).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -62,20 +65,33 @@ e2e() {
 
 dhcp() {
   echo "== dhcp"
-  command -v dnsmasq >/dev/null || { bad "dnsmasq not installed"; return; }
-  had_lab=0
-  ip link show gtdhcp0 >/dev/null 2>&1 && had_lab=1
-  "$here/dhcp-lab.sh" up >/dev/null
   K="gantry -f $here/dhcp/gantry.yaml"
+  if [ -n "${GT_DHCP_PARENT:-}" ]; then
+    # A real network with its own DHCP server.
+    : "${GT_DHCP_GATEWAY:?set GT_DHCP_GATEWAY with GT_DHCP_PARENT}"
+    export GT_DHCP_PARENT
+    gw=$GT_DHCP_GATEWAY
+    in_pool="inet [0-9.]*/[0-9]*"
+    dns="^nameserver "
+  else
+    command -v dnsmasq >/dev/null || { bad "dnsmasq not installed"; return; }
+    had_lab=0
+    ip link show gtdhcp0 >/dev/null 2>&1 && had_lab=1
+    "$here/dhcp-lab.sh" up >/dev/null
+    gw=10.99.0.1
+    in_pool="inet 10.99.0.1[0-5][0-9]/24"
+    dns="nameserver 10.99.0.1"
+  fi
   $K down >/dev/null 2>&1
   if $K up -d >/tmp/gt-dhcp-up.log 2>&1; then ok "up with dhcp"; else bad "up with dhcp"; tail -5 /tmp/gt-dhcp-up.log; fi
-  check "leased address in pool" sh -c "$K exec -T shell ip -4 addr show eth0 | grep -q 'inet 10.99.0.1[0-5][0-9]/24'"
-  check "default route from lease" sh -c "$K exec -T shell ip route | grep -q 'default via 10.99.0.1'"
-  check "resolv.conf from lease" sh -c "$K exec -T shell cat /etc/resolv.conf | grep -q 'nameserver 10.99.0.1'"
-  check "server reachable" sh -c "$K exec -T shell ping -c1 -W2 10.99.0.1"
+  check "leased address in pool" sh -c "$K exec -T shell ip -4 addr show eth0 | grep -q '$in_pool'"
+  check "default route from lease" sh -c "$K exec -T shell ip route | grep -q 'default via $gw '"
+  check "resolv.conf from lease" sh -c "$K exec -T shell cat /etc/resolv.conf | grep -q '$dns'"
+  check "server reachable" sh -c "$K exec -T shell ping -c1 -W2 $gw"
   $K down >/dev/null 2>&1
-  check "lease released on down" grep -q DHCPRELEASE /run/gtdhcp.log
   check_not "agent stopped" pgrep -f "dhcp-agent.*dhcplab"
+  [ -n "${GT_DHCP_PARENT:-}" ] && return
+  check "lease released on down" grep -q DHCPRELEASE /run/gtdhcp.log
   [ "$had_lab" = 1 ] || "$here/dhcp-lab.sh" down >/dev/null
 }
 

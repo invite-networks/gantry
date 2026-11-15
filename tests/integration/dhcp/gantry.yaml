@@ -3,7 +3,7 @@ runtime: ${GANTRY_RUNTIME:-docker}
 networks:
   lab:
     driver: macvlan
-    parent: gtdhcp0
+    parent: ${GT_DHCP_PARENT:-gtdhcp0}
 pods:
   client:
     networks:
