@@ -129,6 +129,19 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
             sysctls.insert(0, (k.to_string(), v.to_string()));
         }
     }
+    // The kernel applies the stricter of `conf.all` and the interface's own
+    // rp_filter. Hosts such as Ubuntu set `all` to 2, which a new namespace
+    // inherits, so the per-interface 0 below would not take effect for DHCP
+    // offers. Static interfaces keep their own (inherited) value.
+    let rp_all = "net.ipv4.conf.all.rp_filter";
+    if pod
+        .attachments
+        .iter()
+        .any(|a| a.addressing == Addressing::Dhcp)
+        && !pod.sysctls.contains_key(rp_all)
+    {
+        sysctls.push((rp_all.into(), "0".into()));
+    }
     if !pod.ipv6 {
         sysctls.push(("net.ipv6.conf.all.disable_ipv6".into(), "1".into()));
         sysctls.push(("net.ipv6.conf.default.disable_ipv6".into(), "1".into()));
@@ -154,7 +167,8 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         if att.addressing == Addressing::Dhcp {
             // Offers come from a server the pod has no route to yet, which
             // reverse path filtering (inherited from the host) would drop.
-            // Pods never forward, so the filter buys nothing here.
+            // Pods never forward, so the filter buys nothing here. This
+            // needs `conf.all.rp_filter` at 0 as well (set above).
             let path = format!("/proc/sys/net/ipv4/conf/{tmp}/rp_filter");
             ns::in_netns(&netns, move || {
                 std::fs::write(&path, "0").ctx(|| format!("write {path}"))
