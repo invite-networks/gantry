@@ -1,6 +1,6 @@
 # kiri patches: `ns:<path>` for network, UTS and IPC
 
-Two patches add Podman-style `ns:<path>` namespace modes to the
+One patch adds Podman-style `ns:<path>` namespace modes to the
 [kiri](https://github.com/libracoder/kiri) container engine. Gantry pins each
 pod's network, UTS and IPC namespaces as files (`/run/netns/gt-<project>-<pod>`
 and `/run/gantry/<project>/pods/<pod>/{uts,ipc}`) and needs Docker, Podman and
@@ -10,12 +10,14 @@ ns:/run/netns/<pod> not found` and ignores `UTSMode` and `IpcMode`.
 
 | Patch | Adds |
 | --- | --- |
-| `0001-network-mode-ns-path.patch` | `HostConfig.NetworkMode = "ns:<path>"` |
-| `0002-uts-ipc-ns-path.patch` | `HostConfig.UTSMode` and `HostConfig.IpcMode = "ns:<path>"` |
+| `0001-ns-path-network-uts-ipc.patch` | `HostConfig.NetworkMode`, `UTSMode` and `IpcMode = "ns:<path>"` |
 
-Base: upstream `b249ecc` (Release notes for 0.2.1). Apply both, in order.
+Base: upstream `193dfd7` (Engine: always and unless-stopped containers come
+back after the VM crashes, #267). Earlier this was two patches on `b249ecc`;
+they were rebased, combined into one change and formatted for the upstream
+pull request.
 
-## What 0001 does (network)
+## Network
 
 - The daemon accepts `HostConfig.NetworkMode = "ns:<absolute path>"`, for
   example `/run/netns/<pod>` as made by `ip netns add <pod>`.
@@ -30,12 +32,14 @@ Base: upstream `b249ecc` (Release notes for 0.2.1). Apply both, in order.
 - Refused at create: a relative path, `-p`/`-P`, `--mac-address`, `--link`.
 - A missing path or a file that is not a network namespace fails at start
   with a clear error (`network namespace /run/netns/x: not a network
-  namespace`).
+  namespace`). Anything that is not a regular file (a FIFO, a device, a
+  socket) is refused before it is opened (`not a namespace file`), and the
+  open itself is non-blocking, so such a path cannot hang the agent.
 - `docker inspect` shows `NetworkMode: ns:<path>` and empty
   `NetworkSettings.Networks`, as for `container:` mode.
 - `docker exec`, `docker restart` and restart policies work as usual.
 
-## What 0002 does (UTS and IPC)
+## UTS and IPC
 
 - The daemon accepts `HostConfig.UTSMode = "ns:<absolute path>"` and
   `HostConfig.IpcMode = "ns:<absolute path>"`, independently of each other and
@@ -59,7 +63,7 @@ Base: upstream `b249ecc` (Release notes for 0.2.1). Apply both, in order.
   (`private` when not set).
 - `docker exec` and `docker restart` land in the same namespaces.
 
-Code changes (both patches):
+Code changes:
 
 | File | Change |
 | --- | --- |
@@ -79,8 +83,8 @@ into the same directory.
 ```sh
 git clone https://github.com/libracoder/kiri.git
 cd kiri
-git checkout b249ecc
-git am path/to/0001-network-mode-ns-path.patch path/to/0002-uts-ipc-ns-path.patch
+git checkout 193dfd7
+git am path/to/0001-ns-path-network-uts-ipc.patch
 
 cargo build --release -j 2 -p kiri -p kiri-init
 cargo test --release -j 2 -p kiri -p kiri-init -- \
@@ -157,36 +161,7 @@ macvlan on `vlan4` with an address and default route) as Gantry does.
 - Kiri only uses the namespaces. Creating and deleting them, and the
   interfaces and firewall rules, remain Gantry's job.
 
-## Upstream PRs
+## Upstream
 
-Would be opened against `libracoder/kiri` as two PRs, or one with two
-commits.
-
-**0001 title:** Network mode `ns:<path>`: join an existing network namespace
-
-**0001 body:** Adds Podman's `--network ns:<path>` so a container can join a
-network namespace created outside kiri (for example `ip netns add`), as pod
-managers and CNI-style tools need. The daemon validates the path and refuses
-options that would need kiri to change the namespace (ports, MAC, links); the
-agent checks the path is a network namespace and joins it the way
-`container:` mode joins another container's. Nothing in the namespace is
-created or removed. Linux host engine only; in the macOS VM the path would
-refer to the guest. Unit tests included; tested end to end on Debian 13 with
-two containers sharing loopback, `docker exec`, restart and daemon restart
-with a restart policy.
-
-**0002 title:** UTS and IPC modes `ns:<path>`: join existing UTS and IPC
-namespaces
-
-**0002 body:** Adds Podman's `--uts ns:<path>` and `--ipc ns:<path>`
-(`HostConfig.UTSMode`, `HostConfig.IpcMode`) so containers of a pod made
-outside kiri share its hostname and IPC as well as its network. The agent
-checks each path's namespace type and the child joins it instead of cloning
-a new one, before mounting `/dev/mqueue`. In a joined UTS namespace kiri sets
-no hostname; `$HOSTNAME`, `/etc/hostname` and `/etc/hosts` show the
-namespace's own, and a client's `Hostname` is ignored rather than refused.
-Unit tests included; tested end to end on Debian 13 with two containers
-sharing the pinned namespaces, `docker exec`, restart and a System V message
-queue made outside the container.
-
-Not pushed and no PR opened.
+Drafts of the upstream issue and pull request are in `UPSTREAM.md`.
+Nothing has been pushed or opened.
