@@ -20,9 +20,9 @@ use bollard::Docker;
 pub use bollard::container::LogOutput;
 use bollard::models::{ContainerCreateBody, ContainerInspectResponse, VolumeCreateRequest};
 use bollard::query_parameters::{
-    CreateContainerOptions, CreateImageOptions, InspectContainerOptions, ListContainersOptions,
-    LogsOptions, RemoveContainerOptions, RemoveVolumeOptions, StartContainerOptions,
-    StopContainerOptions,
+    CreateContainerOptions, CreateImageOptions, InspectContainerOptions, KillContainerOptions,
+    ListContainersOptions, LogsOptions, RemoveContainerOptions, RemoveVolumeOptions,
+    StartContainerOptions, StopContainerOptions, TopOptions,
 };
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use std::collections::HashMap;
@@ -82,6 +82,8 @@ pub struct ContainerInfo {
     pub health: Option<String>,
     pub exit_code: Option<i64>,
     pub image: String,
+    /// A `gantry run` container rather than the service's own.
+    pub oneoff: bool,
 }
 
 /// The default API socket of each runtime, overridable with
@@ -425,6 +427,42 @@ impl Engine {
         raw_get(&socket, &path).await.map(drop)
     }
 
+    pub async fn kill(&self, name: &str, signal: &str) -> Result<()> {
+        let opts = KillContainerOptions {
+            signal: signal.to_string(),
+        };
+        match self.docker().await?.kill_container(name, Some(opts)).await {
+            Ok(()) => Ok(()),
+            Err(e) if not_found(&e) || is_status(&e, 409) => Ok(()),
+            Err(e) => Err(self.err(&format!("kill {name}"), e)),
+        }
+    }
+
+    /// The processes running in a container: column titles and rows.
+    pub async fn top(&self, name: &str) -> Result<(Vec<String>, Vec<Vec<String>>)> {
+        let r = self
+            .docker()
+            .await?
+            .top_processes(name, None::<TopOptions>)
+            .await
+            .map_err(|e| self.err(&format!("top {name}"), e))?;
+        Ok((
+            r.titles.unwrap_or_default(),
+            r.processes.unwrap_or_default(),
+        ))
+    }
+
+    /// The engine's version and the API version in use.
+    pub async fn version(&self) -> Result<String> {
+        let d = self.docker().await?;
+        let v = d.version().await.map_err(|e| self.err("version", e))?;
+        Ok(format!(
+            "{} (API {})",
+            v.version.unwrap_or_default(),
+            d.client_version()
+        ))
+    }
+
     /// The underlying API client, for exec and builds.
     pub(crate) async fn api(&self) -> Result<&Docker> {
         self.docker().await
@@ -468,6 +506,7 @@ fn container_info(c: &ContainerInspectResponse) -> ContainerInfo {
             .as_ref()
             .and_then(|c| c.image.clone())
             .unwrap_or_default(),
+        oneoff: !label(exec::LABEL_ONEOFF).is_empty(),
     }
 }
 

@@ -1,5 +1,6 @@
 //! The commands: bringing pods and their services up and down in order.
 
+use crate::engine::exec::{RunRequest, oneoff_body};
 use crate::engine::{ContainerInfo, Engine, create_spec, hash_of};
 use crate::errors::{Context, Error, Result};
 use crate::pod::{self, Ensured, state};
@@ -173,33 +174,13 @@ impl Orchestrator {
             .iter()
             .map(|s| self.project.services[s].pod.clone())
             .collect();
-        let mut states = IndexMap::new();
-        let existing = self.containers().await;
-        for pod_name in &pods {
-            let pod = &self.project.pods[pod_name];
-            let hash = pod::config_hash(&self.project, pod);
-            let changed = state::PodState::load(&self.project.name, pod_name)?
-                .is_some_and(|s| s.config_hash != hash || !pod::ns::is_pinned(&s.netns));
-            if changed {
-                // Containers hold the old namespaces; remove them first.
-                let stale: Vec<&(Engine, ContainerInfo)> = existing
-                    .iter()
-                    .filter(|(_, c)| &c.pod == pod_name)
-                    .collect();
-                try_join_all(stale.iter().map(|(e, c)| async move {
-                    println!("Removing {} (pod {pod_name} changed)", c.name);
-                    e.remove(&c.name).await
-                }))
-                .await?;
-            }
-            let (st, how) = pod::ensure(&self.project, pod).await?;
-            if how == Ensured::Created {
-                println!("Pod {pod_name} created ({})", describe_pod(&st));
-            }
-            states.insert(pod_name.clone(), st);
-        }
-        self.project.save_snapshot()?;
-        pod::refresh(&self.project)?;
+        let existing: Vec<(Engine, ContainerInfo)> = self
+            .containers()
+            .await
+            .into_iter()
+            .filter(|(_, c)| !c.oneoff)
+            .collect();
+        let states = self.ensure_pods(&pods, &existing).await?;
 
         let timeout = opts.wait_timeout.unwrap_or(Duration::from_secs(300));
         let states = &states;
@@ -228,6 +209,158 @@ impl Orchestrator {
             .await?;
         }
         Ok(())
+    }
+
+    /// Creates or keeps the given pods, then refreshes every pod's hosts
+    /// file and firewall. Containers of a pod whose shape changed are
+    /// removed first, since they hold the old namespaces.
+    pub async fn ensure_pods(
+        &self,
+        pods: &IndexSet<String>,
+        existing: &[(Engine, ContainerInfo)],
+    ) -> Result<IndexMap<String, state::PodState>> {
+        let mut states = IndexMap::new();
+        for pod_name in pods {
+            let pod = self
+                .project
+                .pods
+                .get(pod_name)
+                .ok_or_else(|| Error::config(format!("no such pod {pod_name:?}")))?;
+            let hash = pod::config_hash(&self.project, pod);
+            let changed = state::PodState::load(&self.project.name, pod_name)?
+                .is_some_and(|s| s.config_hash != hash || !pod::ns::is_pinned(&s.netns));
+            if changed {
+                try_join_all(existing.iter().filter(|(_, c)| &c.pod == pod_name).map(
+                    |(e, c)| async move {
+                        println!("Removing {} (pod {pod_name} changed)", c.name);
+                        e.remove(&c.name).await
+                    },
+                ))
+                .await?;
+            }
+            let (st, how) = pod::ensure(&self.project, pod).await?;
+            if how == Ensured::Created {
+                println!("Pod {pod_name} created ({})", describe_pod(&st));
+            }
+            states.insert(pod_name.clone(), st);
+        }
+        self.project.save_snapshot()?;
+        pod::refresh(&self.project)?;
+        Ok(states)
+    }
+
+    /// Runs a one-off container of `service` in its pod (`gantry run`)
+    /// and returns its exit code. Dependencies are brought up first unless
+    /// `no_deps` is set.
+    pub async fn run_oneoff(
+        &self,
+        service: &str,
+        req: &RunRequest,
+        name: Option<String>,
+        rm: bool,
+        no_deps: bool,
+    ) -> Result<i64> {
+        let svc = self
+            .project
+            .services
+            .get(service)
+            .ok_or_else(|| Error::config(format!("no such service {service:?}")))?;
+        if !no_deps && !svc.depends_on.is_empty() {
+            let deps: Vec<String> = svc.depends_on.keys().cloned().collect();
+            self.up(&UpOptions {
+                services: deps.clone(),
+                ..Default::default()
+            })
+            .await?;
+            for (dep, cond) in &svc.depends_on {
+                self.wait_for(dep, *cond, Duration::from_secs(300)).await?;
+            }
+        }
+        let e = self.engine(svc.runtime);
+        e.check().await?;
+        let st = {
+            let _lock = lock(&self.project.name)?;
+            self.ensure_images(&[service.to_string()], None, false)
+                .await?;
+            let existing: Vec<(Engine, ContainerInfo)> = self
+                .containers()
+                .await
+                .into_iter()
+                .filter(|(_, c)| !c.oneoff)
+                .collect();
+            let pods: IndexSet<String> = [svc.pod.clone()].into_iter().collect();
+            let mut states = self.ensure_pods(&pods, &existing).await?;
+            states
+                .shift_remove(&svc.pod)
+                .ok_or_else(|| Error::State(format!("pod {} did not come up", svc.pod)))?
+        };
+        let body = oneoff_body(create_spec(&self.project, svc, &st), req);
+        let name = name.unwrap_or_else(|| {
+            format!(
+                "{}-{}-run-{}",
+                self.project.name,
+                svc.name,
+                crate::util::random_id(3)
+            )
+        });
+        let code = e.run_attached(&name, body, req.tty, req.interactive).await;
+        if rm {
+            let _ = e.remove(&name).await;
+        }
+        code
+    }
+
+    /// Sends a signal to the selected services' containers.
+    pub async fn kill(&self, services: &[String], signal: &str) -> Result<()> {
+        let order = self.selected(services)?;
+        try_join_all(order.iter().map(|name| async move {
+            let svc = &self.project.services[name];
+            println!("Killing {}", svc.container_name);
+            self.engine(svc.runtime)
+                .kill(&svc.container_name, signal)
+                .await
+        }))
+        .await?;
+        Ok(())
+    }
+
+    /// Removes the selected services' stopped containers (all of them
+    /// after stopping when `stop` is set). Pods stay.
+    pub async fn rm(&self, services: &[String], stop: bool) -> Result<()> {
+        if stop {
+            self.stop(services, None).await?;
+        }
+        let order = self.selected(services)?;
+        try_join_all(order.iter().map(|name| async move {
+            let svc = &self.project.services[name];
+            let e = self.engine(svc.runtime);
+            match e.inspect(&svc.container_name).await? {
+                Some(c) if c.status == "running" => {
+                    println!("{} is running; stop it first or pass --stop", c.name);
+                    Ok::<(), Error>(())
+                }
+                Some(c) => {
+                    println!("Removing {}", c.name);
+                    e.remove(&c.name).await
+                }
+                None => Ok(()),
+            }
+        }))
+        .await?;
+        Ok(())
+    }
+
+    /// The named services, or all of them, checked to exist.
+    pub fn selected(&self, services: &[String]) -> Result<Vec<String>> {
+        if services.is_empty() {
+            return Ok(self.project.services.keys().cloned().collect());
+        }
+        for s in services {
+            if !self.project.services.contains_key(s) {
+                return Err(Error::config(format!("no such service {s:?}")));
+            }
+        }
+        Ok(services.to_vec())
     }
 
     /// Builds or pulls what the services need. Pulls run in parallel;

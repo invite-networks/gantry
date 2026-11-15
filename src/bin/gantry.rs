@@ -5,7 +5,7 @@
 use clap::{Args, Parser, Subcommand};
 use gantry::compose::{LoadOptions, load};
 use gantry::engine::Engine;
-use gantry::engine::exec::ExecRequest;
+use gantry::engine::exec::{ExecRequest, RunRequest};
 use gantry::errors::{Context, Error, Result};
 use gantry::orchestrator::{Orchestrator, UpOptions, describe_pod};
 use gantry::pod::{self, state};
@@ -97,6 +97,55 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,
     },
+    /// Run a one-off command in a new container of a service, in its pod
+    Run {
+        /// Remove the container when it exits
+        #[arg(long)]
+        rm: bool,
+        /// Do not allocate a TTY
+        #[arg(short = 'T', long = "no-tty")]
+        no_tty: bool,
+        /// Do not start the service's dependencies
+        #[arg(long)]
+        no_deps: bool,
+        /// Container name (default: <project>-<service>-run-<id>)
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(short = 'u', long)]
+        user: Option<String>,
+        #[arg(short = 'w', long)]
+        workdir: Option<String>,
+        #[arg(short = 'e', long = "env")]
+        env: Vec<String>,
+        /// Override the entrypoint (one word; use the command for arguments)
+        #[arg(long)]
+        entrypoint: Option<String>,
+        service: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Send a signal to services (default SIGKILL)
+    Kill {
+        #[arg(short = 's', long, default_value = "SIGKILL")]
+        signal: String,
+        services: Vec<String>,
+    },
+    /// Remove stopped service containers (pods stay)
+    Rm {
+        /// Stop the services first
+        #[arg(short = 's', long)]
+        stop: bool,
+        /// Accepted for Compose compatibility; gantry never prompts
+        #[arg(short = 'f', long)]
+        force: bool,
+        services: Vec<String>,
+    },
+    /// Show the processes running in services
+    Top { services: Vec<String> },
+    /// List projects that have pods on this host
+    Ls,
+    /// Show gantry and engine versions
+    Version,
     /// Start existing services
     Start { services: Vec<String> },
     /// Stop services (pods stay up)
@@ -488,6 +537,83 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             // Exit directly: the stdin reader may still be blocked in a read.
             std::process::exit(i32::try_from(code.clamp(0, 255)).unwrap_or(1));
         }
+        Cmd::Run {
+            rm,
+            no_tty,
+            no_deps,
+            name,
+            user,
+            workdir,
+            env,
+            entrypoint,
+            service,
+            command,
+        } => {
+            require_root()?;
+            let o = load_project(&g)?;
+            let stdin_tty = std::io::stdin().is_terminal();
+            let tty = !no_tty && stdin_tty && std::io::stdout().is_terminal();
+            let req = RunRequest {
+                cmd: command,
+                entrypoint: entrypoint.map(|e| vec![e]),
+                tty,
+                interactive: tty || !stdin_tty,
+                user,
+                workdir,
+                env,
+            };
+            let code = o.run_oneoff(&service, &req, name, rm, no_deps).await?;
+            // Exit directly: the stdin reader may still be blocked in a read.
+            std::process::exit(i32::try_from(code.clamp(0, 255)).unwrap_or(1));
+        }
+        Cmd::Kill { signal, services } => {
+            require_root()?;
+            load_project(&g)?.kill(&services, &signal).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Rm {
+            stop,
+            force: _,
+            services,
+        } => {
+            require_root()?;
+            load_project(&g)?.rm(&services, stop).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Top { services } => {
+            require_root()?;
+            let o = load_project(&g)?;
+            for name in o.selected(&services)? {
+                let svc = &o.project.services[&name];
+                match o.engine(svc.runtime).top(&svc.container_name).await {
+                    Ok((titles, procs)) => {
+                        println!("{name} ({})", svc.container_name);
+                        let mut rows = vec![titles];
+                        rows.extend(procs);
+                        print_table(&rows);
+                        println!();
+                    }
+                    Err(e) => println!("{name}: {e}\n"),
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Ls => {
+            require_root()?;
+            list_projects();
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Version => {
+            println!("gantry {}", env!("CARGO_PKG_VERSION"));
+            for kind in [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri] {
+                let e = Engine::new(kind);
+                match e.version().await {
+                    Ok(v) => println!("{kind}: {v}"),
+                    Err(_) => println!("{kind}: not available"),
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Start { services } => {
             require_root()?;
             load_project(&g)?.start(&services).await?;
@@ -636,7 +762,7 @@ async fn ps(o: &Orchestrator) -> Result<()> {
     for svc in o.project.services.values() {
         let found = containers
             .iter()
-            .find(|(e, c)| c.service == svc.name && e.kind == svc.runtime);
+            .find(|(e, c)| c.service == svc.name && e.kind == svc.runtime && !c.oneoff);
         let state = match found {
             Some((_, c)) => match &c.health {
                 Some(h) if c.status == "running" => format!("{} ({h})", c.status),
@@ -654,7 +780,15 @@ async fn ps(o: &Orchestrator) -> Result<()> {
         ]);
     }
     for (e, c) in &containers {
-        if !o.project.services.contains_key(&c.service) {
+        if c.oneoff {
+            rows.push(vec![
+                c.service.clone(),
+                c.pod.clone(),
+                e.kind.to_string(),
+                format!("{} (run)", c.status),
+                c.name.clone(),
+            ]);
+        } else if !o.project.services.contains_key(&c.service) {
             rows.push(vec![
                 c.service.clone(),
                 c.pod.clone(),
@@ -701,21 +835,64 @@ fn pod_list(o: &Orchestrator) {
     print_table(&rows);
 }
 
+/// Projects with a saved snapshot under the run directory.
+fn list_projects() {
+    let mut rows = vec![
+        ["NAME", "PODS", "SERVICES", "DIRECTORY"]
+            .map(String::from)
+            .to_vec(),
+    ];
+    let Ok(rd) = std::fs::read_dir(state::run_dir()) else {
+        print_table(&rows);
+        return;
+    };
+    let mut names: Vec<String> = rd
+        .flatten()
+        .filter(|e| e.path().join("project.json").is_file())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    for name in names {
+        let Ok(Some(p)) = gantry::project::Project::load_snapshot(&name) else {
+            continue;
+        };
+        let up = state::list_pods(&name)
+            .iter()
+            .filter(|pod| {
+                state::PodState::load(&name, pod)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| pod::ns::is_pinned(&s.netns))
+            })
+            .count();
+        rows.push(vec![
+            name.clone(),
+            format!("{up}/{}", p.pods.len()),
+            p.services.len().to_string(),
+            p.dir.display().to_string(),
+        ]);
+    }
+    print_table(&rows);
+}
+
 fn print_table(rows: &[Vec<String>]) {
-    let cols = rows.first().map(Vec::len).unwrap_or(0);
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..cols)
-        .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
+        .map(|i| {
+            rows.iter()
+                .filter_map(|r| r.get(i))
+                .map(|c| c.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
     for r in rows {
         let line: Vec<String> = r
             .iter()
             .enumerate()
-            .map(|(i, c)| {
-                if i + 1 == cols {
-                    c.clone()
-                } else {
-                    format!("{c:<w$}", w = widths[i])
-                }
+            .map(|(i, c)| match widths.get(i) {
+                Some(w) if i + 1 < r.len() => format!("{c:<w$}"),
+                _ => c.clone(),
             })
             .collect();
         println!("{}", line.join("   "));
