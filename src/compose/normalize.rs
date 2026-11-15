@@ -327,6 +327,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
     }
     check_cycles(&services)?;
     for pod in pods.values() {
+        check_pod_names(pod)?;
         if let Some(fw) = &pod.firewall {
             for rule in fw.input.iter().chain(&fw.output) {
                 for peer in &rule.peers {
@@ -415,6 +416,54 @@ fn project_name(ctx: &Ctx<'_>, from_file: Option<&str>) -> Result<String> {
         return Err(Error::config(format!("invalid project name {raw:?}")));
     }
     Ok(name)
+}
+
+/// Printable ASCII without quotes, backslashes or control characters.
+fn safe_text(s: &str, max: usize) -> bool {
+    s.len() <= max
+        && s.chars()
+            .all(|c| c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ')
+}
+
+/// A DNS name: labels of letters, digits and hyphens, dot separated.
+pub fn is_dns_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && s.trim_end_matches('.').split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && l.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !l.starts_with('-')
+        })
+}
+
+fn check_pod_names(pod: &Pod) -> Result<()> {
+    let err = |m: String| Error::config(format!("pod {}: {m}", pod.name));
+    if !is_dns_name(&pod.hostname) || pod.hostname.len() > 63 {
+        return Err(err(format!("invalid hostname {:?}", pod.hostname)));
+    }
+    if let Some(d) = &pod.domainname {
+        if !is_dns_name(d) {
+            return Err(err(format!("invalid domainname {d:?}")));
+        }
+    }
+    for d in &pod.dns_search {
+        if !is_dns_name(d) {
+            return Err(err(format!("invalid dns_search entry {d:?}")));
+        }
+    }
+    for o in &pod.dns_options {
+        if o.is_empty() || !o.chars().all(|c| c.is_ascii_graphic()) {
+            return Err(err(format!("invalid dns_opt entry {o:?}")));
+        }
+    }
+    for (h, _) in &pod.extra_hosts {
+        if !is_dns_name(h) {
+            return Err(err(format!("invalid extra_hosts name {h:?}")));
+        }
+    }
+    Ok(())
 }
 
 fn check_name(name: &str, what: &str) -> Result<()> {
@@ -670,7 +719,16 @@ fn attachments(
                 a.ifname
             )));
         }
-        if a.ifname.len() > 15 || a.ifname.is_empty() || a.ifname == "lo" {
+        let ifname_ok = a
+            .ifname
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if a.ifname.len() > 15
+            || a.ifname.is_empty()
+            || a.ifname == "lo"
+            || !ifname_ok
+            || a.ifname.starts_with('.')
+        {
             return Err(Error::config(format!(
                 "{owner}: invalid interface name {:?}",
                 a.ifname
@@ -885,21 +943,25 @@ fn rule(
     if parsed_peers.contains(&Peer::Any) {
         parsed_peers.clear();
     }
-    if let Some(l) = &r.limit {
-        let ok = l.split_once('/').is_some_and(|(n, unit)| {
-            n.trim().parse::<u32>().is_ok()
-                && matches!(unit.trim(), "second" | "minute" | "hour" | "day")
-        });
-        if !ok {
-            return Err(err(format!(
-                "limit {l:?} must look like 10/second (second, minute, hour, day)"
-            )));
+    let limit = match &r.limit {
+        None => None,
+        Some(l) => {
+            let parsed = l.split_once('/').and_then(|(n, unit)| {
+                let n = n.trim().parse::<u32>().ok()?;
+                let unit = unit.trim();
+                matches!(unit, "second" | "minute" | "hour" | "day").then(|| format!("{n}/{unit}"))
+            });
+            Some(parsed.ok_or_else(|| {
+                err(format!(
+                    "limit {l:?} must look like 10/second (second, minute, hour, day)"
+                ))
+            })?)
         }
-    }
+    };
     if let Some(c) = &r.comment {
-        if c.contains('"') || c.len() > 120 {
+        if !safe_text(c, 120) {
             return Err(err(
-                "comment must be under 120 characters with no double quotes".into(),
+                "comment must be under 120 printable ASCII characters without quotes or backslashes".into(),
             ));
         }
     }
@@ -910,7 +972,7 @@ fn rule(
         peers: parsed_peers,
         interface: r.interface,
         log: r.log,
-        limit: r.limit,
+        limit,
         comment: r.comment,
     })
 }
@@ -998,7 +1060,7 @@ fn service(
 
     let mut mounts = Vec::new();
     for v in s.volumes.unwrap_or_default() {
-        mounts.push(mount(v, ctx, volumes).map_err(&err)?);
+        mounts.push(mount(v, ctx, volumes).map_err(err)?);
     }
     for t in s.tmpfs.map(raw::StringOrList::into_vec).unwrap_or_default() {
         let (target, opts) = t.split_once(':').unwrap_or((&t, ""));
@@ -1106,7 +1168,7 @@ fn service(
                 l.published.map(raw::Scalar::into_string),
             ),
         };
-        let range = parse_port_range(&range).map_err(&err)?;
+        let range = parse_port_range(&range).map_err(err)?;
         if let Some(pubp) = published {
             if parse_port_range(&pubp).ok() != Some(range) {
                 warnings.push(format!(
@@ -1130,7 +1192,7 @@ fn service(
             "udp" => Proto::Udp,
             o => return Err(err(format!("expose: unknown protocol {o:?}"))),
         };
-        expose.push((proto, parse_port_range(spec).map_err(&err)?));
+        expose.push((proto, parse_port_range(spec).map_err(err)?));
     }
 
     let sysctls = list_or_map(s.sysctls, ctx, false);
@@ -1526,9 +1588,39 @@ mod tests {
                 &format!(
                     "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ port: 80, comment: 'a\"b' }}] }}\nservices: {{}}\n"
                 ),
-                "double quotes",
+                "without quotes",
             ),
         ];
+        let more = [
+            (
+                format!(
+                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ port: 80, comment: 'a\\\\' }}] }}\nservices: {{}}\n"
+                ),
+                "backslashes",
+            ),
+            (
+                format!(
+                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5, interface: 'e\"0' }} }} }}\nservices: {{}}\n"
+                ),
+                "invalid interface name",
+            ),
+            (
+                format!(
+                    "name: t\n{NET}pods:\n  p: {{ hostname: 'a b', networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
+                ),
+                "invalid hostname",
+            ),
+            (
+                format!(
+                    "name: t\n{NET}pods:\n  p: {{ dns_search: ['x\\nnameserver 6.6.6.6'], networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
+                ),
+                "invalid dns_search",
+            ),
+        ];
+        for (yaml, want) in &more {
+            let err = try_load(yaml).unwrap_err().to_string();
+            assert!(err.contains(want), "expected {want:?} in {err:?}");
+        }
         for (yaml, want) in cases {
             let err = try_load(yaml).unwrap_err().to_string();
             assert!(err.contains(want), "expected {want:?} in {err:?}");

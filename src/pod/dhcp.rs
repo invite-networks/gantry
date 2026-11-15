@@ -450,7 +450,8 @@ fn parse_ack(m: &Message, server: Ipv4Addr) -> Result<Offer> {
         _ => vec![],
     };
     let domain = match opts.get(OptionCode::DomainName) {
-        Some(DhcpOption::DomainName(d)) => Some(d.clone()),
+        // Untrusted input from the LAN: keep it only if it is a DNS name.
+        Some(DhcpOption::DomainName(d)) if crate::compose::is_dns_name(d) => Some(d.clone()),
         _ => None,
     };
     let lease_secs = match opts.get(OptionCode::AddressLeaseTime) {

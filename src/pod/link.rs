@@ -264,20 +264,6 @@ pub fn format_mac(m: &[u8; 6]) -> String {
         .join(":")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mac_is_stable_and_local() {
-        let a = stable_mac("demo/web/lan");
-        assert_eq!(a, stable_mac("demo/web/lan"));
-        assert_ne!(a, stable_mac("demo/db/lan"));
-        assert_eq!(a[0] & 0x03, 0x02);
-        assert_eq!(format_mac(&[2, 0, 0, 0, 0xab, 1]), "02:00:00:00:ab:01");
-    }
-}
-
 /// Sends gratuitous ARP (request and reply forms) for `ip` on interface
 /// `index`, so switches and routers drop any stale entry for the address.
 /// Must run in the network namespace that owns the interface.
@@ -336,4 +322,18 @@ pub fn gratuitous_arp(index: u32, mac: [u8; 6], ip: std::net::Ipv4Addr) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mac_is_stable_and_local() {
+        let a = stable_mac("demo/web/lan");
+        assert_eq!(a, stable_mac("demo/web/lan"));
+        assert_ne!(a, stable_mac("demo/db/lan"));
+        assert_eq!(a[0] & 0x03, 0x02);
+        assert_eq!(format_mac(&[2, 0, 0, 0, 0xab, 1]), "02:00:00:00:ab:01");
+    }
 }

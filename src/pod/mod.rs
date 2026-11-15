@@ -386,17 +386,34 @@ async fn wait_for_lease(dir: &Path, ifname: &str, wait: Duration) -> Result<()> 
     }
 }
 
+/// The agent's PID, only if that process really is the DHCP agent for this
+/// pod directory and interface. A stale PID file (after a crash or reboot)
+/// must never lead to signalling an unrelated process.
 fn agent_pid(dir: &Path, ifname: &str) -> Option<i32> {
-    std::fs::read_to_string(dhcp::pid_path(dir, ifname))
+    let pid: i32 = std::fs::read_to_string(dhcp::pid_path(dir, ifname))
         .ok()?
         .trim()
         .parse()
-        .ok()
+        .ok()?;
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+    let has = |want: &[u8]| args.contains(&want);
+    let dir_s = dir.to_string_lossy();
+    (has(b"dhcp-agent") && has(dir_s.as_bytes()) && has(ifname.as_bytes())).then_some(pid)
 }
 
+/// Alive and not a zombie (the agent is never reaped by its parent).
 fn agent_alive(dir: &Path, ifname: &str) -> bool {
-    agent_pid(dir, ifname)
-        .is_some_and(|p| nix::sys::signal::kill(nix::unistd::Pid::from_raw(p), None).is_ok())
+    let Some(pid) = agent_pid(dir, ifname) else {
+        return false;
+    };
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.chars().next())
+            .is_some_and(|state| state != 'Z' && state != 'X'),
+        Err(_) => false,
+    }
 }
 
 /// Stops DHCP agents and removes the pod's namespaces and directory.

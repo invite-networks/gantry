@@ -225,12 +225,33 @@ fn rule_lines(
         }
     }
     let has_peers = !r.peers.is_empty();
+    let unresolved: Vec<&Peer> = r
+        .peers
+        .iter()
+        .filter(|p| match p {
+            Peer::Pod(name) => book.pod_addresses(name).is_empty(),
+            Peer::Service(s) => project
+                .services
+                .get(s)
+                .is_none_or(|svc| book.pod_addresses(&svc.pod).is_empty()),
+            _ => false,
+        })
+        .collect();
+    if !unresolved.is_empty() && r.action != Action::Accept {
+        // Skipping a deny rule would let the peer through: refuse instead.
+        return Err(format!(
+            "{} has no address yet, so this {} rule cannot be applied; wait for its lease and run `kirisame firewall reload`",
+            describe_peers(&unresolved),
+            r.action.as_nft()
+        ));
+    }
     if has_peers && v4.is_empty() && v6.is_empty() {
-        // The peer has no address yet (for example a DHCP pod still leasing):
+        // An accept rule whose peers have no address yet matches nothing:
         // emit nothing rather than a rule that would match everyone.
         return Ok(vec![format!(
-            "# skipped: no addresses known yet for {:?} in pod {}",
-            r.peers, pod.name
+            "# skipped: no addresses known yet for {} in pod {}",
+            describe_peers(&r.peers.iter().collect::<Vec<_>>()),
+            pod.name
         )]);
     }
 
@@ -305,6 +326,20 @@ fn rule_lines(
         lines.push(parts.join(" "));
     }
     Ok(lines)
+}
+
+fn describe_peers(peers: &[&Peer]) -> String {
+    peers
+        .iter()
+        .map(|p| match p {
+            Peer::Any => "any".to_string(),
+            Peer::Cidr(n) => n.to_string(),
+            Peer::Pod(x) => format!("pod:{x}"),
+            Peer::Service(x) => format!("service:{x}"),
+            Peer::Network(x) => format!("network:{x}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn proto_name(p: Proto) -> &'static str {
@@ -431,6 +466,18 @@ services:
             ),
             "{rs}"
         );
+    }
+
+    #[test]
+    fn deny_rule_with_unknown_peer_fails_closed() {
+        let yaml = BASE.replace(
+            "        - { to: 198.51.100.0/24, action: reject }",
+            "        - { to: 198.51.100.0/24, action: reject }\n        - { to: pod:db, action: drop }",
+        );
+        let p = project(&yaml);
+        let book = |_: &str| -> Vec<IpNet> { vec![] };
+        let err = render(&p, &p.pods["web"], &book).unwrap_err().to_string();
+        assert!(err.contains("pod:db has no address yet"), "{err}");
     }
 
     #[test]

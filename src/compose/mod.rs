@@ -6,6 +6,8 @@ mod normalize;
 pub mod raw;
 pub mod units;
 
+pub use normalize::is_dns_name;
+
 use crate::errors::{Context, Error, Result};
 use crate::project::{Project, RuntimeKind};
 use indexmap::IndexMap;
