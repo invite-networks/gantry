@@ -1,0 +1,36 @@
+# One pod, three engines' worth of containers sharing a namespace.
+# nginx runs under Docker, the checker under Podman; both talk over
+# loopback because they live in the same pod.
+name: mixed
+
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: ${LAN_PARENT:-vlan4}
+      mode: bridge
+    ipam:
+      config:
+        - subnet: 192.0.2.216/29
+          gateway: 192.0.2.222
+
+pods:
+  app:
+    networks:
+      lan:
+        ipv4_address: 192.0.2.217
+    firewall:
+      input:
+        - { proto: tcp, port: 80, from: [198.51.100.0/24, network:lan] }
+
+services:
+  web:
+    image: nginx:alpine
+    pod: app
+    runtime: docker
+  checker:
+    image: alpine:3
+    pod: app
+    runtime: podman
+    depends_on: [web]
+    command: ["sh", "-c", "while true; do wget -qO- http://localhost/ | grep -o 'Welcome to nginx' ; sleep 15; done"]

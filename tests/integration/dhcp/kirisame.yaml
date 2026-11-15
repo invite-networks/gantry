@@ -1,0 +1,18 @@
+name: dhcplab
+runtime: ${KIRISAME_RUNTIME:-docker}
+networks:
+  lab:
+    driver: macvlan
+    parent: ksdhcp0
+pods:
+  client:
+    networks:
+      lab: { dhcp: true }
+    firewall:
+      input:
+        - { proto: tcp, port: 8080 }
+services:
+  shell:
+    image: alpine:3
+    pod: client
+    command: ["sleep", "infinity"]

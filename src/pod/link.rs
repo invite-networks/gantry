@@ -133,7 +133,16 @@ impl Netlink {
             .add(msg)
             .execute()
             .await
-            .map_err(|e| Error::network(format!("create {name} on {parent}: {e}")))
+            .map_err(|e| {
+                let busy = matches!(&e, rtnetlink::Error::NetlinkError(m) if m.raw_code() == -libc::EBUSY);
+                if busy {
+                    Error::network(format!(
+                        "create {name} on {parent}: device busy; a parent cannot carry macvlan and ipvlan links at the same time (check `ip -d link` for existing sublinks of {parent})"
+                    ))
+                } else {
+                    Error::network(format!("create {name} on {parent}: {e}"))
+                }
+            })
     }
 
     /// Renames a link and brings it up.

@@ -140,6 +140,15 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         host.create_sublink(&net.parent, net.driver, &tmp, mac, net.mtu, &netns)
             .await?;
         let idx = inner.require_index(&tmp).await?;
+        if att.addressing == Addressing::Dhcp {
+            // Offers come from a server the pod has no route to yet, which
+            // reverse path filtering (inherited from the host) would drop.
+            // Pods never forward, so the filter buys nothing here.
+            let path = format!("/proc/sys/net/ipv4/conf/{tmp}/rp_filter");
+            ns::in_netns(&netns, move || {
+                std::fs::write(&path, "0").ctx(|| format!("write {path}"))
+            })?;
+        }
         inner.rename_up(idx, &att.ifname).await?;
 
         let mut addresses = Vec::new();

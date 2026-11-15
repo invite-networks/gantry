@@ -1,0 +1,56 @@
+# End to end scenario used by tests/integration/run.sh. All addresses come
+# from the environment so it runs on any LAN.
+name: ks-e2e
+runtime: ${KIRISAME_RUNTIME:-docker}
+
+networks:
+  lan:
+    driver: ${KS_DRIVER:-macvlan}
+    driver_opts:
+      parent: ${KS_PARENT:?set KS_PARENT}
+      mode: ${KS_MODE:-bridge}
+    ipam:
+      config:
+        - subnet: ${KS_SUBNET:?set KS_SUBNET}
+          gateway: ${KS_GATEWAY:?set KS_GATEWAY}
+
+pods:
+  web:
+    hostname: webhost
+    networks:
+      lan: { ipv4_address: "${KS_IP1:?set KS_IP1}" }
+    firewall:
+      input:
+        - { proto: tcp, port: 8080, from: pod:other }
+  data:
+    networks:
+      lan: { ipv4_address: "${KS_IP2:?set KS_IP2}" }
+    firewall:
+      input:
+        - { proto: tcp, port: 6379, from: pod:web }
+  other:
+    networks:
+      lan: { ipv4_address: "${KS_IP3:?set KS_IP3}" }
+
+services:
+  server:
+    image: alpine:3
+    pod: web
+    command: ["sh", "-c", "while true; do echo hello-from-web | nc -l -p 8080; done"]
+  client:
+    image: alpine:3
+    pod: web
+    command: ["sleep", "infinity"]
+    depends_on:
+      redis: { condition: service_healthy }
+  redis:
+    image: redis:7-alpine
+    pod: data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15
+  probe:
+    image: alpine:3
+    pod: other
+    command: ["sleep", "infinity"]
