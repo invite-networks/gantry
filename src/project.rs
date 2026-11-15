@@ -1,0 +1,322 @@
+//! The normalized project model. The compose loader turns YAML into these
+//! types after validation; everything else in kirisame works from them.
+
+use indexmap::IndexMap;
+use ipnet::IpNet;
+use serde::Serialize;
+use std::net::IpAddr;
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// Which container engine runs a service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeKind {
+    Docker,
+    Podman,
+    Kiri,
+}
+
+impl RuntimeKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "docker" => Some(Self::Docker),
+            "podman" => Some(Self::Podman),
+            "kiri" => Some(Self::Kiri),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+            Self::Kiri => "kiri",
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Project {
+    pub name: String,
+    /// Directory relative paths in the compose file resolve against.
+    pub dir: PathBuf,
+    pub runtime: RuntimeKind,
+    pub networks: IndexMap<String, Network>,
+    pub pods: IndexMap<String, Pod>,
+    pub services: IndexMap<String, Service>,
+    pub volumes: IndexMap<String, Volume>,
+}
+
+impl Project {
+    pub fn services_in_pod<'a>(&'a self, pod: &'a str) -> impl Iterator<Item = &'a Service> + 'a {
+        self.services.values().filter(move |s| s.pod == pod)
+    }
+}
+
+/// A layer 2 network the pods attach to directly.
+#[derive(Debug, Clone, Serialize)]
+pub struct Network {
+    pub name: String,
+    pub driver: NetDriver,
+    /// Host interface the macvlan or ipvlan link hangs off.
+    pub parent: String,
+    pub subnets: Vec<Subnet>,
+    pub mtu: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase", tag = "type", content = "mode")]
+pub enum NetDriver {
+    Macvlan(MacvlanMode),
+    Ipvlan(IpvlanMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MacvlanMode {
+    Bridge,
+    Private,
+    Vepa,
+    Passthru,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IpvlanMode {
+    L2,
+    L3,
+    L3s,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Subnet {
+    pub cidr: IpNet,
+    pub gateway: Option<IpAddr>,
+}
+
+/// A pod: one set of namespaces created by kirisame, shared by every
+/// service in it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pod {
+    pub name: String,
+    pub hostname: String,
+    pub domainname: Option<String>,
+    pub share_uts: bool,
+    pub share_ipc: bool,
+    pub attachments: Vec<Attachment>,
+    pub dns: Vec<IpAddr>,
+    pub dns_search: Vec<String>,
+    pub dns_options: Vec<String>,
+    pub extra_hosts: Vec<(String, IpAddr)>,
+    pub sysctls: IndexMap<String, String>,
+    pub ipv6: bool,
+    pub firewall: Option<Firewall>,
+    /// True when the pod was created implicitly for a service without `pod:`.
+    pub implicit: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Attachment {
+    pub network: String,
+    /// Interface name inside the pod (eth0, eth1, ...).
+    pub ifname: String,
+    pub addressing: Addressing,
+    pub mac: Option<[u8; 6]>,
+    pub default_route: bool,
+    /// Gateway override for this attachment.
+    pub gateway: Option<IpAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Addressing {
+    /// Static addresses with prefix lengths.
+    Static(Vec<IpNet>),
+    /// DHCPv4 (plus SLAAC for IPv6 if the network offers it).
+    Dhcp,
+    /// No IPv4 address; only link local and SLAAC.
+    None,
+}
+
+/// The firewall applied inside a pod's network namespace.
+#[derive(Debug, Clone, Serialize)]
+pub struct Firewall {
+    pub input_policy: Action,
+    pub output_policy: Action,
+    pub allow_ping: bool,
+    pub log_dropped: bool,
+    pub input: Vec<Rule>,
+    pub output: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Accept,
+    Drop,
+    Reject,
+}
+
+impl Action {
+    pub fn as_nft(self) -> &'static str {
+        match self {
+            Action::Accept => "accept",
+            Action::Drop => "drop",
+            Action::Reject => "reject",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Rule {
+    pub action: Action,
+    pub protocols: Vec<Proto>,
+    pub ports: Vec<PortRange>,
+    /// Peers: the source for input rules, the destination for output rules.
+    pub peers: Vec<Peer>,
+    pub interface: Option<String>,
+    pub log: bool,
+    pub limit: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Proto {
+    Tcp,
+    Udp,
+    Icmp,
+    Icmpv6,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PortRange {
+    pub start: u16,
+    pub end: u16,
+}
+
+impl std::fmt::Display for PortRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}", self.start)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase", tag = "kind", content = "value")]
+pub enum Peer {
+    Any,
+    Cidr(IpNet),
+    Pod(String),
+    Service(String),
+    Network(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Volume {
+    pub name: String,
+    /// Name in the engine: `<project>_<name>` unless external or renamed.
+    pub engine_name: String,
+    pub external: bool,
+    pub driver: Option<String>,
+    pub driver_opts: IndexMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Service {
+    pub name: String,
+    pub pod: String,
+    pub runtime: RuntimeKind,
+    pub image: String,
+    pub container_name: String,
+    pub command: Option<Vec<String>>,
+    pub entrypoint: Option<Vec<String>>,
+    pub environment: IndexMap<String, String>,
+    pub working_dir: Option<String>,
+    pub user: Option<String>,
+    pub labels: IndexMap<String, String>,
+    pub mounts: Vec<Mount>,
+    pub restart: Option<String>,
+    pub healthcheck: Option<Healthcheck>,
+    pub depends_on: IndexMap<String, DependsCondition>,
+    pub stop_signal: Option<String>,
+    pub stop_grace_period: Option<Duration>,
+    pub cap_add: Vec<String>,
+    pub cap_drop: Vec<String>,
+    pub privileged: bool,
+    pub read_only: bool,
+    pub devices: Vec<String>,
+    pub tty: bool,
+    pub stdin_open: bool,
+    pub init: bool,
+    pub mem_limit: Option<u64>,
+    pub cpus: Option<f64>,
+    pub pids_limit: Option<i64>,
+    pub shm_size: Option<u64>,
+    pub ulimits: IndexMap<String, (i64, i64)>,
+    pub security_opt: Vec<String>,
+    pub group_add: Vec<String>,
+    pub sysctls: IndexMap<String, String>,
+    pub pull_policy: PullPolicy,
+    /// Ports opened to everyone in the pod firewall (`ports:`).
+    pub ports: Vec<(Proto, PortRange)>,
+    /// Ports opened to the project's other pods in the pod firewall (`expose:`).
+    pub expose: Vec<(Proto, PortRange)>,
+    pub profiles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mount {
+    pub kind: MountKind,
+    pub source: String,
+    pub target: String,
+    pub read_only: bool,
+    /// Extra options passed through (propagation, SELinux labels, tmpfs size).
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MountKind {
+    Bind,
+    Volume,
+    Tmpfs,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Healthcheck {
+    /// The image's healthcheck is turned off.
+    pub disabled: bool,
+    /// `["CMD", ...]` or `["CMD-SHELL", "..."]`. None keeps the image's test.
+    pub test: Option<Vec<String>>,
+    pub interval: Option<Duration>,
+    pub timeout: Option<Duration>,
+    pub retries: Option<u32>,
+    pub start_period: Option<Duration>,
+    pub start_interval: Option<Duration>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependsCondition {
+    ServiceStarted,
+    ServiceHealthy,
+    ServiceCompletedSuccessfully,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullPolicy {
+    Missing,
+    Always,
+    Never,
+}
