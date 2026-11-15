@@ -23,26 +23,24 @@ signed.
 | `cargo fmt`, `cargo clippy` and the tests pass (CONTRIBUTING, PR template) | Lines the change adds or edits are rustfmt-clean (stable rustfmt 1.11). Upstream `main` itself is not: `cargo fmt --check` reports hundreds of diffs in untouched files, so the change does not reformat them (one change per PR). Clippy reports no new warnings. Unit tests: 6 new; run as root on GitHub, every test passes on both sides (the 6 failures on the lab host came from running unprivileged). `tests/e2e.sh`: identical results on `main` and the change. See Part 2. |
 | Tests run before submitting (CONTRIBUTING: `cargo test`, `tests/e2e.sh`) | Done on Linux (host and GitHub) and macOS (Apple silicon), `main` and the final commit `414a5bc` compared each time. No new failures anywhere. |
 | `scripts/ci/notices.sh` after dependency changes (CONTRIBUTING) | Not applicable: no dependency changes. |
-| Sign your commits (CONTRIBUTING) | **Needs you.** The commit is unsigned. Re-sign with your key before pushing (`git commit --amend -S --no-edit`). |
+| Sign your commits (CONTRIBUTING) | Done. SSH-signed commit `02cdd1b` (same content as `414a5bc`) on `pr-ns-path` in `~/Code/kiri-pr`; the key is registered on GitHub as a signing key. |
 | Contributor License Agreement with Canestack Labs via CLA Assistant (CONTRIBUTING, CLA.md) | **Needs you.** Section 3 asks you to confirm you may grant the licence (employer rights) and that the contribution is your original work. See the AI note below. |
 | Apache-2.0 licence for contributions (CONTRIBUTING) | Accepted by submitting. |
 | At most 3 open pull requests (CONTRIBUTING, PR template) | **Check** your open PRs on the repo before opening. |
-| Disclose AI tools used (PR template) | Drafted as "yes". **Edit to match what you want to state.** |
+| Disclose AI tools used (PR template) | Final wording in Part 2. |
 | How you found it (PR template) | "I use Kiri and ran into this myself". |
 | Tested on (PR template) | Linux (Debian 13; Ubuntu 24.04 on GitHub), macOS 27 on Apple silicon, Windows (client build and tests only). |
 | Code of Conduct: professional, respectful, no one's private information | Drafts name no people and contain no addresses, host names, internal IPs or emails. Commit author is the GitHub noreply address. |
 | SECURITY.md: vulnerabilities go through private reporting, not public issues | Nothing here is a vulnerability in released Kiri. The FIFO hang was in this unreleased patch and is fixed. The issue discusses the feature's security properties openly, which is normal design discussion. If a maintainer considers joining arbitrary namespaces a security concern, move that discussion to private reporting. |
 
-### Open decisions for you
+### Decisions
 
-1. **Name the project or not.** The drafts describe the use case generically
-   ("a pod manager that pins namespaces itself"). Gantry is not public;
-   naming it is your call.
-2. **AI disclosure wording** and the CLA's "original work" statement.
-3. **Which account and fork** opens the PR (personal or invite-networks).
-4. **Windows end to end.** Everything else is tested. A Windows 10 or 11
-   machine with WSL 2 (or an Azure VM with nested virtualization) would
-   close it; the issue asks the maintainers whether they need it first.
+1. **Account:** `aasay`. The pull request comes from a public fork of
+   `libracoder/kiri` under that account.
+2. **Gantry is not named.** The drafts describe the use case generically.
+3. **AI disclosure:** included, final wording in Part 2.
+4. **Windows end to end:** not run; the issue asks the maintainers whether
+   they need it before the pull request.
 
 Test runs: private repo `invite-networks/kiri-pr-testing` (branches
 `upstream-main`, `pr-ns-path`, and `ci` with the workflow), plus the
@@ -261,10 +259,10 @@ Windows (build and unit tests).
 - [ ] I found it by reading the code or comparing with Docker
 - [ ] Someone else reported it (link the issue above)
 
-AI tools used to write this change: yes. The implementation, tests and this
-description were written with an AI coding assistant (Claude) under my
-direction, and reviewed and tested by me. <edit to match what you want to
-state>
+AI tools used to write this change: yes. The implementation, its tests and
+this description were written with an AI coding assistant (Claude, by
+Anthropic) working under my direction. The testing described above was run
+on my machines and on GitHub Actions.
 
 ### Checklist
 
