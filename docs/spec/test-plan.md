@@ -216,6 +216,9 @@ automation in 4.4.
 | Benchmark, 8 services in 2 pods: `up` 0.45 to 0.7 s, no-change `up` 80 ms, `ps` 45 ms, `down` 0.35 to 0.6 s | Recorded in the README |
 | MT-02 (`examples/mixed` on vlan4): Docker, Podman and kiri share one UTS and network namespace | Passed |
 | `examples/basic` on vlan4 with Docker and with Podman: gateway reachable, HTTPS egress, health-gated start | Passed (reaching the pods from another LAN machine not yet done) |
+| MT-03: reboot with `gantry@basic` enabled | Passed: pods back on vlan4 with firewalls about 15 s after boot |
+| Private registry with basic auth, credentials from `docker login` | Passed; fails cleanly after logout |
+| A same-named container from outside the project is refused, not replaced | Passed |
 
 ## 5. Manual tests
 
