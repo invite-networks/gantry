@@ -1,11 +1,11 @@
-# The kirisame file format
+# The gantry file format
 
-kirisame reads the Compose format and extends it where pods need it. A plain
+gantry reads the Compose format and extends it where pods need it. A plain
 `compose.yaml` works when its services set `image:` and use macvlan or
 ipvlan networks. Everything below is either standard Compose or marked as a
-kirisame extension.
+gantry extension.
 
-Files are looked up in this order: `kirisame.yaml`, `kirisame.yml`,
+Files are looked up in this order: `gantry.yaml`, `gantry.yml`,
 `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`.
 A matching `*.override.yaml` next to it is merged on top. `-f` takes any
 number of files, merged left to right. Mappings merge recursively. Lists
@@ -35,7 +35,7 @@ from the environment first, then from `.env` in the project directory (or
 
 ## networks
 
-kirisame does not build bridges or NAT. A network is a parent interface on
+gantry does not build bridges or NAT. A network is a parent interface on
 the host, and each pod gets its own macvlan or ipvlan link on it with its own
 address on the LAN.
 
@@ -89,10 +89,10 @@ pods:
 ```
 
 Every pod network needs an address: `ipv4_address`, `addresses` or
-`dhcp: true`. kirisame never picks LAN addresses on its own.
+`dhcp: true`. gantry never picks LAN addresses on its own.
 
 With macvlan, a pod's MAC is derived from the project, pod and network names,
-so it keeps the same MAC (and DHCP lease) across restarts. kirisame sends
+so it keeps the same MAC (and DHCP lease) across restarts. gantry sends
 gratuitous ARP when it assigns an address so the LAN forgets stale entries.
 
 The first network carries the default route unless another sets
@@ -107,7 +107,7 @@ All services in a pod share:
 * the UTS namespace (hostname) and IPC namespace, unless `share` says
   otherwise. (kiri containers keep their own UTS and IPC namespaces; see
   the README.)
-* `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`, which kirisame
+* `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`, which gantry
   writes and bind mounts read only.
 
 ### Names
@@ -122,7 +122,7 @@ All services in a pod share:
 
 ## firewall (extension)
 
-A pod with a `firewall` section gets an nftables table (`inet kirisame`)
+A pod with a `firewall` section gets an nftables table (`inet gantry`)
 inside its own network namespace. The host's rules are never touched. A pod
 without a `firewall` section is open.
 
@@ -132,7 +132,7 @@ firewall:
     input: drop        # default drop (accept, drop, reject)
     output: accept     # default accept
   allow_ping: true     # default true
-  log_dropped: false   # log dropped packets (rate limited) with prefix "kirisame <pod> in drop:"
+  log_dropped: false   # log dropped packets (rate limited) with prefix "gantry <pod> in drop:"
   input:
     - proto: tcp                 # tcp, udp, icmp, icmpv6, any, or a list
       port: 443                  # or ports: [80, 443, "8000-8100"]
@@ -165,13 +165,13 @@ A rule with `port` and no `proto` is TCP.
 Service `ports:` and `expose:` feed the firewall:
 
 * `ports: ["80", "443/tcp"]` opens those ports to everyone. A host mapping
-  like `"8080:80"` has no meaning for a pod on the LAN; kirisame opens the
+  like `"8080:80"` has no meaning for a pod on the LAN; gantry opens the
   container port (80) and warns.
 * `expose: ["5432"]` opens the port to the project's other pods only.
 
 Rules that name pods are rendered from the addresses known at the time. When
 a DHCP pod's address changes, its agent refreshes every pod's hosts file and
-firewall; `kirisame firewall reload` does the same by hand. A deny rule
+firewall; `gantry firewall reload` does the same by hand. A deny rule
 whose pod has no address yet is an error rather than being skipped.
 
 ## services
@@ -206,7 +206,7 @@ Container names default to `<project>-<service>-1`.
 
 | Runtime | Engine | How containers join the pod |
 |---|---|---|
-| `docker` | `docker` CLI | `--runtime kirisame --network none`, with annotations that the `kirisame-oci` shim turns into namespace paths before running runc. Run `kirisame setup docker` once per host. |
+| `docker` | `docker` CLI | `--runtime gantry --network none`, with annotations that the `gantry-oci` shim turns into namespace paths before running runc. Run `gantry setup docker` once per host. |
 | `podman` | `podman` CLI | `--network ns:<path>`, `--uts ns:<path>`, `--ipc ns:<path>`. Bare image names are qualified to `docker.io`. |
 | `kiri` | `docker -H unix:///run/kiri/docker.sock` | `--network ns:<path>`. Needs the kiri patch in `contrib/kiri`. |
 

@@ -1,5 +1,5 @@
 //! A small DHCPv4 client. Each DHCP attachment gets a detached agent
-//! process (`kirisame internal dhcp-agent`) that lives in the pod's network
+//! process (`gantry internal dhcp-agent`) that lives in the pod's network
 //! namespace, holds the lease, renews it, and releases it on shutdown.
 
 use super::link::Netlink;
@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep, timeout};
 
-/// The lease as recorded for other kirisame commands to read.
+/// The lease as recorded for other gantry commands to read.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LeaseFile {
     pub address: Ipv4Addr,

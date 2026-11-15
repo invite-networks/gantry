@@ -1,36 +1,36 @@
 # End to end scenario used by tests/integration/run.sh. All addresses come
 # from the environment so it runs on any LAN.
-name: ks-e2e
-runtime: ${KIRISAME_RUNTIME:-docker}
+name: gt-e2e
+runtime: ${GANTRY_RUNTIME:-docker}
 
 networks:
   lan:
-    driver: ${KS_DRIVER:-macvlan}
+    driver: ${GT_DRIVER:-macvlan}
     driver_opts:
-      parent: ${KS_PARENT:?set KS_PARENT}
-      mode: ${KS_MODE:-bridge}
+      parent: ${GT_PARENT:?set GT_PARENT}
+      mode: ${GT_MODE:-bridge}
     ipam:
       config:
-        - subnet: ${KS_SUBNET:?set KS_SUBNET}
-          gateway: ${KS_GATEWAY:?set KS_GATEWAY}
+        - subnet: ${GT_SUBNET:?set GT_SUBNET}
+          gateway: ${GT_GATEWAY:?set GT_GATEWAY}
 
 pods:
   web:
     hostname: webhost
     networks:
-      lan: { ipv4_address: "${KS_IP1:?set KS_IP1}" }
+      lan: { ipv4_address: "${GT_IP1:?set GT_IP1}" }
     firewall:
       input:
         - { proto: tcp, port: 8080, from: pod:other }
   data:
     networks:
-      lan: { ipv4_address: "${KS_IP2:?set KS_IP2}" }
+      lan: { ipv4_address: "${GT_IP2:?set GT_IP2}" }
     firewall:
       input:
         - { proto: tcp, port: 6379, from: pod:web }
   other:
     networks:
-      lan: { ipv4_address: "${KS_IP3:?set KS_IP3}" }
+      lan: { ipv4_address: "${GT_IP3:?set GT_IP3}" }
 
 services:
   server:

@@ -1,4 +1,4 @@
-//! Pods: the namespaces kirisame creates before any container starts.
+//! Pods: the namespaces gantry creates before any container starts.
 //!
 //! Bringing a pod up means: pin a network namespace (plus UTS and IPC when
 //! shared), create one macvlan or ipvlan link per network directly inside
@@ -141,7 +141,7 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
             .networks
             .get(&att.network)
             .ok_or_else(|| Error::network(format!("unknown network {}", att.network)))?;
-        let tmp = format!("ks{}", crate::util::random_id(5));
+        let tmp = format!("gt{}", crate::util::random_id(5));
         let mac = match net.driver {
             NetDriver::Macvlan(_) => Some(att.mac.unwrap_or_else(|| {
                 link::stable_mac(&format!("{}/{}/{}", project.name, pod.name, att.network))
@@ -333,7 +333,7 @@ fn start_dhcp_agent(
     default_route: bool,
 ) -> Result<()> {
     let dir = state::pod_dir(&project.name, &pod.name);
-    let exe = std::env::current_exe().ctx(|| "locate kirisame binary".into())?;
+    let exe = std::env::current_exe().ctx(|| "locate gantry binary".into())?;
     let log =
         std::fs::File::create(dhcp::log_path(&dir, ifname)).ctx(|| "create dhcp log".into())?;
     let log2 = log.try_clone().ctx(|| "dup dhcp log".into())?;
@@ -351,7 +351,7 @@ fn start_dhcp_agent(
     .args(["--ifname", ifname, "--hostname", &pod.hostname])
     .args([
         "--client-id",
-        &format!("kirisame-{}-{}-{ifname}", project.name, pod.name),
+        &format!("gantry-{}-{}-{ifname}", project.name, pod.name),
     ]);
     if default_route {
         cmd.arg("--default-route");
@@ -591,7 +591,7 @@ pub fn nft(netns: &Path, args: &[&str]) -> Result<()> {
 }
 
 pub fn nft_output(netns: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let bin = std::env::var("KIRISAME_NFT").unwrap_or_else(|_| "nft".into());
+    let bin = std::env::var("GANTRY_NFT").unwrap_or_else(|_| "nft".into());
     let mut cmd = Command::new(&bin);
     cmd.args(args);
     ns::command_in_netns(&mut cmd, netns)?;

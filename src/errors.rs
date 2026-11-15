@@ -1,12 +1,12 @@
-//! Error type shared by the kirisame library.
+//! Error type shared by the gantry library.
 
 use std::fmt::Display;
 
-/// Every failure kirisame reports. Variants group errors by the layer that
+/// Every failure gantry reports. Variants group errors by the layer that
 /// produced them so the CLI can print a useful prefix.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The compose file is invalid or uses something kirisame does not support.
+    /// The compose file is invalid or uses something gantry does not support.
     #[error("config: {0}")]
     Config(String),
     /// A filesystem or process operation failed.

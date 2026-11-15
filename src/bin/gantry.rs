@@ -1,23 +1,23 @@
-//! The `kirisame` command line.
+//! The `gantry` command line.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use clap::{Args, Parser, Subcommand};
-use kirisame::compose::{LoadOptions, load};
-use kirisame::engine::Engine;
-use kirisame::errors::{Context, Error, Result};
-use kirisame::orchestrator::{Orchestrator, UpOptions, describe_pod};
-use kirisame::pod::{self, state};
-use kirisame::project::{PullPolicy, RuntimeKind};
+use gantry::compose::{LoadOptions, load};
+use gantry::engine::Engine;
+use gantry::engine::exec::ExecRequest;
+use gantry::errors::{Context, Error, Result};
+use gantry::orchestrator::{Orchestrator, UpOptions, describe_pod};
+use gantry::pod::{self, state};
+use gantry::project::{PullPolicy, RuntimeKind};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
-use tokio::io::AsyncBufReadExt;
 
 #[derive(Parser)]
 #[command(
-    name = "kirisame",
+    name = "gantry",
     version,
     about = "Pod-first container orchestration with the Compose format"
 )]
@@ -30,7 +30,7 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct Global {
-    /// Compose file(s). Default: kirisame.yaml, compose.yaml or docker-compose.yaml
+    /// Compose file(s). Default: gantry.yaml, compose.yaml or docker-compose.yaml
     #[arg(short = 'f', long = "file", global = true)]
     files: Vec<PathBuf>,
     /// Project name
@@ -49,7 +49,7 @@ struct Global {
     #[arg(long, global = true, value_parser = parse_runtime)]
     runtime: Option<RuntimeKind>,
     /// Log level (error, warn, info, debug, trace)
-    #[arg(long, global = true, default_value = "info", env = "KIRISAME_LOG")]
+    #[arg(long, global = true, default_value = "info", env = "GANTRY_LOG")]
     log_level: String,
 }
 
@@ -113,6 +113,8 @@ enum Cmd {
     },
     /// Pull service images
     Pull { services: Vec<String> },
+    /// Build service images that have a build section
+    Build { services: Vec<String> },
     /// Validate and print the normalized project
     Config {
         /// Print only service names
@@ -152,6 +154,9 @@ struct UpArgs {
     /// Wait until services are running or healthy
     #[arg(long)]
     wait: bool,
+    /// Build images before starting, even when they exist
+    #[arg(long)]
+    build: bool,
     /// Seconds to wait for dependencies and --wait
     #[arg(long)]
     wait_timeout: Option<u64>,
@@ -183,9 +188,11 @@ enum FwCmd {
 
 #[derive(Subcommand)]
 enum SetupCmd {
-    /// Register the kirisame-oci runtime shim with Docker
+    /// Enable Podman's API socket (podman.socket)
+    Podman,
+    /// Register the gantry-oci runtime shim with Docker
     Docker {
-        /// Path to kirisame-oci (default: next to this binary)
+        /// Path to gantry-oci (default: next to this binary)
         #[arg(long)]
         oci_path: Option<PathBuf>,
         /// Docker daemon config file
@@ -226,9 +233,8 @@ enum InternalCmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let filter =
-        tracing_subscriber::EnvFilter::try_new(format!("kirisame={}", cli.global.log_level))
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("kirisame=info"));
+    let filter = tracing_subscriber::EnvFilter::try_new(format!("gantry={}", cli.global.log_level))
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("gantry=info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
@@ -240,7 +246,7 @@ fn main() -> ExitCode {
     // so every thread the runtime starts is inside it.
     if let Cmd::Internal(InternalCmd::DhcpAgent { netns, .. }) = &cli.command {
         if let Err(e) = pod::ns::enter_netns(netns) {
-            eprintln!("kirisame: {e}");
+            eprintln!("gantry: {e}");
             return ExitCode::from(1);
         }
     }
@@ -251,14 +257,14 @@ fn main() -> ExitCode {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("kirisame: start runtime: {e}");
+            eprintln!("gantry: start runtime: {e}");
             return ExitCode::from(1);
         }
     };
     match rt.block_on(run(cli)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("kirisame: {e}");
+            eprintln!("gantry: {e}");
             ExitCode::from(1)
         }
     }
@@ -286,7 +292,7 @@ fn require_root() -> Result<()> {
         Ok(())
     } else {
         Err(Error::State(
-            "kirisame runs rootful; run it as root (sudo)".into(),
+            "gantry runs rootful; run it as root (sudo)".into(),
         ))
     }
 }
@@ -345,6 +351,21 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Setup(SetupCmd::Podman) => {
+            require_root()?;
+            let ok = std::process::Command::new("systemctl")
+                .args(["enable", "--now", "podman.socket"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                return Err(Error::engine(
+                    "could not enable podman.socket; is podman installed with its systemd units?",
+                ));
+            }
+            Engine::new(RuntimeKind::Podman).check().await?;
+            println!("Podman API socket enabled; Podman is ready for gantry pods");
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Setup(SetupCmd::Docker {
             oci_path,
             daemon_json,
@@ -364,8 +385,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                     "always" => Ok(PullPolicy::Always),
                     "missing" => Ok(PullPolicy::Missing),
                     "never" => Ok(PullPolicy::Never),
+                    "build" => Ok(PullPolicy::Build),
                     o => Err(Error::config(format!(
-                        "--pull {o:?} (always, missing, never)"
+                        "--pull {o:?} (always, missing, never, build)"
                     ))),
                 })
                 .transpose()?;
@@ -375,13 +397,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 pull,
                 wait_timeout: a.wait_timeout.map(Duration::from_secs),
                 wait: a.wait,
+                build: a.build,
             };
             o.up(&opts).await?;
             if a.detach {
                 return Ok(ExitCode::SUCCESS);
             }
             println!(
-                "Attaching to logs; press Ctrl-C to stop the services (pods stay up until `kirisame down`)."
+                "Attaching to logs; press Ctrl-C to stop the services (pods stay up until `gantry down`)."
             );
             let services = o.start_order(&a.services)?;
             tokio::select! {
@@ -437,28 +460,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 .services
                 .get(&service)
                 .ok_or_else(|| Error::config(format!("no such service {service:?}")))?;
-            let mut cmd = o.engine(svc.runtime).std_cmd();
-            cmd.arg("exec");
             let tty = !no_tty && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-            if tty {
-                cmd.arg("-it");
-            } else {
-                cmd.arg("-i");
-            }
-            if let Some(u) = user {
-                cmd.args(["-u", &u]);
-            }
-            if let Some(w) = workdir {
-                cmd.args(["-w", &w]);
-            }
-            for e in env {
-                cmd.args(["-e", &e]);
-            }
-            cmd.arg(&svc.container_name).args(&command);
-            let status = cmd.status().ctx(|| format!("run {}", svc.runtime))?;
-            Ok(ExitCode::from(
-                status.code().unwrap_or(1).clamp(0, 255) as u8
-            ))
+            let req = ExecRequest {
+                cmd: command,
+                tty,
+                interactive: tty || !std::io::stdin().is_terminal(),
+                user,
+                workdir,
+                env,
+            };
+            let code = o.engine(svc.runtime).exec(&svc.container_name, req).await?;
+            // Exit directly: the stdin reader may still be blocked in a read.
+            std::process::exit(i32::try_from(code.clamp(0, 255)).unwrap_or(1));
         }
         Cmd::Start { services } => {
             require_root()?;
@@ -485,15 +498,51 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 services
             };
-            for s in list {
+            let mut svcs = Vec::new();
+            for s in &list {
                 let svc = o
                     .project
                     .services
-                    .get(&s)
+                    .get(s)
                     .ok_or_else(|| Error::config(format!("no such service {s:?}")))?;
-                println!("Pulling {} for {s} ({})", svc.image, svc.runtime);
-                o.engine(svc.runtime).pull(&svc.image).await?;
+                if svc.build.is_none() {
+                    svcs.push(svc);
+                }
             }
+            futures_util::future::try_join_all(svcs.iter().map(|svc| {
+                let o = &o;
+                async move {
+                    println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
+                    o.engine(svc.runtime).pull(&svc.image).await
+                }
+            }))
+            .await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Build { services } => {
+            require_root()?;
+            let o = load_project(&g)?;
+            let list: Vec<String> = if services.is_empty() {
+                o.project
+                    .services
+                    .iter()
+                    .filter(|(_, s)| s.build.is_some())
+                    .map(|(n, _)| n.clone())
+                    .collect()
+            } else {
+                services
+            };
+            for s in &list {
+                let svc = o
+                    .project
+                    .services
+                    .get(s)
+                    .ok_or_else(|| Error::config(format!("no such service {s:?}")))?;
+                if svc.build.is_none() {
+                    return Err(Error::config(format!("service {s} has no build section")));
+                }
+            }
+            o.ensure_images(&list, None, true).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Pod(PodCmd::List) => {
@@ -666,6 +715,8 @@ async fn logs(
     tail: Option<String>,
     timestamps: bool,
 ) -> Result<()> {
+    use futures_util::StreamExt;
+    use gantry::engine::LogOutput;
     let width = services.iter().map(String::len).max().unwrap_or(0);
     let mut tasks = Vec::new();
     for name in services {
@@ -674,46 +725,36 @@ async fn logs(
             .services
             .get(name)
             .ok_or_else(|| Error::config(format!("no such service {name:?}")))?;
-        let mut cmd = tokio::process::Command::from(o.engine(svc.runtime).std_cmd());
-        cmd.arg("logs");
-        if follow {
-            cmd.arg("-f");
-        }
-        if let Some(t) = &tail {
-            cmd.args(["--tail", t]);
-        }
-        if timestamps {
-            cmd.arg("-t");
-        }
-        cmd.arg(&svc.container_name)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd.spawn().ctx(|| format!("{} logs", svc.runtime))?;
+        let mut stream = o
+            .engine(svc.runtime)
+            .logs(&svc.container_name, follow, tail.as_deref(), timestamps)
+            .await?;
         let prefix = format!("{name:<width$} | ");
-        let out = child.stdout.take();
-        let err = child.stderr.take();
         tasks.push(tokio::spawn(async move {
-            let p2 = prefix.clone();
-            let a = async {
-                if let Some(o) = out {
-                    let mut lines = tokio::io::BufReader::new(o).lines();
-                    while let Ok(Some(l)) = lines.next_line().await {
-                        println!("{prefix}{l}");
+            // Chunks need not end at line breaks; keep the partial line of
+            // each stream until it is complete.
+            let mut out_buf: Vec<u8> = Vec::new();
+            let mut err_buf: Vec<u8> = Vec::new();
+            while let Some(Ok(chunk)) = stream.next().await {
+                let (buf, bytes) = match chunk {
+                    LogOutput::StdErr { message } => (&mut err_buf, message),
+                    LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                        (&mut out_buf, message)
                     }
+                    LogOutput::StdIn { .. } => continue,
+                };
+                buf.extend_from_slice(&bytes);
+                while let Some(i) = buf.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = buf.drain(..=i).collect();
+                    let text = String::from_utf8_lossy(&line);
+                    println!("{prefix}{}", text.trim_end_matches(['\n', '\r']));
                 }
-            };
-            let b = async {
-                if let Some(e) = err {
-                    let mut lines = tokio::io::BufReader::new(e).lines();
-                    while let Ok(Some(l)) = lines.next_line().await {
-                        println!("{p2}{l}");
-                    }
+            }
+            for buf in [out_buf, err_buf] {
+                if !buf.is_empty() {
+                    println!("{prefix}{}", String::from_utf8_lossy(&buf));
                 }
-            };
-            tokio::join!(a, b);
-            let _ = child.wait().await;
+            }
         }));
     }
     for t in tasks {
@@ -730,8 +771,8 @@ async fn setup_docker(
     let oci = match oci_path {
         Some(p) => p,
         None => std::env::current_exe()
-            .ctx(|| "locate kirisame".into())?
-            .with_file_name("kirisame-oci"),
+            .ctx(|| "locate gantry".into())?
+            .with_file_name("gantry-oci"),
     };
     let oci = std::fs::canonicalize(&oci).ctx(|| format!("find {}", oci.display()))?;
     let mut cfg: serde_json::Value = match std::fs::read_to_string(daemon_json) {
@@ -747,16 +788,16 @@ async fn setup_docker(
     let runtimes = obj
         .entry("runtimes")
         .or_insert_with(|| serde_json::json!({}));
-    runtimes[kirisame::engine::DOCKER_RUNTIME] =
+    runtimes[gantry::engine::DOCKER_RUNTIME] =
         serde_json::json!({ "path": oci.display().to_string() });
     if let Some(dir) = daemon_json.parent() {
         state::ensure_dir(dir)?;
     }
     let text = serde_json::to_string_pretty(&cfg).map_err(|e| Error::State(e.to_string()))?;
-    kirisame::util::write_atomic(daemon_json, format!("{text}\n").as_bytes())?;
+    gantry::util::write_atomic(daemon_json, format!("{text}\n").as_bytes())?;
     println!(
         "Registered runtime {:?} -> {} in {}",
-        kirisame::engine::DOCKER_RUNTIME,
+        gantry::engine::DOCKER_RUNTIME,
         oci.display(),
         daemon_json.display()
     );
@@ -772,7 +813,7 @@ async fn setup_docker(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
         Engine::new(RuntimeKind::Docker).check().await?;
-        println!("Docker is ready for kirisame pods");
+        println!("Docker is ready for gantry pods");
     }
     Ok(())
 }

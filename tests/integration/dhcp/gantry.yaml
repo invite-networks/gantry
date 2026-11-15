@@ -1,9 +1,9 @@
 name: dhcplab
-runtime: ${KIRISAME_RUNTIME:-docker}
+runtime: ${GANTRY_RUNTIME:-docker}
 networks:
   lab:
     driver: macvlan
-    parent: ksdhcp0
+    parent: gtdhcp0
 pods:
   client:
     networks:

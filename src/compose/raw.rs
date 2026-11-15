@@ -310,6 +310,9 @@ pub enum Ulimit {
 #[derive(Debug, Default, Deserialize)]
 pub struct Service {
     pub image: Option<String>,
+    pub build: Option<Build>,
+    pub logging: Option<Logging>,
+    pub platform: Option<String>,
     pub pod: Option<String>,
     pub runtime: Option<String>,
     pub container_name: Option<String>,
@@ -367,4 +370,39 @@ pub struct Service {
     pub pid: Option<String>,
     #[serde(flatten)]
     pub extra: IndexMap<String, Value>,
+}
+
+/// `build:` as a context path or the long form.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Build {
+    Context(String),
+    Long(Box<BuildLong>),
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BuildLong {
+    pub context: Option<String>,
+    pub dockerfile: Option<String>,
+    pub dockerfile_inline: Option<String>,
+    pub args: Option<ListOrMap>,
+    pub target: Option<String>,
+    pub labels: Option<ListOrMap>,
+    #[serde(default)]
+    pub pull: bool,
+    #[serde(default)]
+    pub no_cache: bool,
+    pub network: Option<String>,
+    pub cache_from: Option<Vec<String>>,
+    pub tags: Option<Vec<String>>,
+    pub extra_hosts: Option<ListOrMap>,
+    pub shm_size: Option<Scalar>,
+    #[serde(flatten)]
+    pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Logging {
+    pub driver: Option<String>,
+    pub options: Option<ListOrMap>,
 }

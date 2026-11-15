@@ -1,5 +1,5 @@
-//! kirisame: a pod-first container orchestrator that reads the Compose
-//! format. kirisame creates each pod's namespaces itself, attaches them to
+//! gantry: a pod-first container orchestrator that reads the Compose
+//! format. gantry creates each pod's namespaces itself, attaches them to
 //! the LAN with macvlan or ipvlan, applies an nftables firewall inside
 //! them, and then starts the pod's containers with Docker, Podman or kiri.
 

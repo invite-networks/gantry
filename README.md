@@ -1,11 +1,11 @@
-# kirisame
+# gantry
 
-kirisame is a pod-first container orchestrator. It reads the Compose
+gantry is a pod-first container orchestrator. It reads the Compose
 format, creates each pod's namespaces itself, puts the pod straight onto
 your LAN with macvlan or ipvlan, applies an nftables firewall inside the
 pod, and then starts the pod's containers with Docker, Podman or kiri.
 
-There is no infra or pause container. kirisame pins the namespaces the
+There is no infra or pause container. gantry pins the namespaces the
 same way `ip netns add` does, and every container joins them by path.
 
 ```
@@ -27,23 +27,23 @@ Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 
 ## Install
 
-kirisame needs Linux, root, `nft` (nftables) for pod firewalls, and at
+gantry needs Linux, root, `nft` (nftables) for pod firewalls, and at
 least one engine.
 
 ```sh
 cargo build --release
-sudo install -m 755 target/release/kirisame target/release/kirisame-oci /usr/local/bin/
-sudo kirisame setup docker      # once per host, if you use Docker
+sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
+sudo gantry setup docker      # once per host, if you use Docker
 ```
 
-`setup docker` registers the `kirisame-oci` runtime shim in
+`setup docker` registers the `gantry-oci` runtime shim in
 `/etc/docker/daemon.json` and reloads dockerd. For kiri, see
 `contrib/kiri`.
 
 ## A first pod
 
 ```yaml
-# kirisame.yaml
+# gantry.yaml
 name: demo
 
 networks:
@@ -75,11 +75,11 @@ services:
 ```
 
 ```sh
-sudo kirisame up -d
-sudo kirisame ps
-sudo kirisame pod ls
-sudo kirisame logs -f app
-sudo kirisame down
+sudo gantry up -d
+sudo gantry ps
+sudo gantry pod ls
+sudo gantry logs -f app
+sudo gantry down
 ```
 
 `nginx` and `app` share the pod: one hostname, one address on the LAN, and
@@ -109,56 +109,56 @@ Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
 
 ## How it works
 
-1. **Pod namespaces.** For each pod kirisame creates a network namespace at
-   `/run/netns/ks-<project>-<pod>` (so `ip netns` sees it), plus UTS and IPC
-   namespaces under `/run/kirisame/<project>/pods/<pod>/`. It sets the
+1. **Pod namespaces.** For each pod gantry creates a network namespace at
+   `/run/netns/gt-<project>-<pod>` (so `ip netns` sees it), plus UTS and IPC
+   namespaces under `/run/gantry/<project>/pods/<pod>/`. It sets the
    hostname inside the UTS namespace.
 2. **Links.** For every network it creates a macvlan or ipvlan link on the
    parent directly inside the pod namespace, renames it to `eth0`, `eth1`,
    ..., assigns static addresses and the default route, and sends
    gratuitous ARP. DHCP networks get a small agent process
-   (`kirisame internal dhcp-agent`) that lives in the pod namespace, holds
+   (`gantry internal dhcp-agent`) that lives in the pod namespace, holds
    the lease, renews it and releases it on `down`.
 3. **Shared files.** `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`
    are written to the pod directory and bind mounted into every container.
-4. **Firewall.** The pod's rules are rendered into an `inet kirisame` table
+4. **Firewall.** The pod's rules are rendered into an `inet gantry` table
    and loaded with `nft` inside the pod namespace.
 5. **Containers.** Each service is created with its engine and joined to
-   the pod's namespaces by path. Labels (`io.kirisame.*`) record the project,
+   the pod's namespaces by path. Labels (`io.gantry.*`) record the project,
    service, pod instance and a config hash, so a second `up` only touches
    what changed. A pod whose network shape changes is recreated along with
    its containers.
 
 ### Docker and the runtime shim
 
-The Docker CLI and API cannot join a namespace by path. kirisame starts
-Docker containers with `--runtime kirisame --network none` and annotations
+The Docker CLI and API cannot join a namespace by path. gantry starts
+Docker containers with `--runtime gantry --network none` and annotations
 naming the pod's namespaces. Docker passes annotations into the OCI spec;
-`kirisame-oci` rewrites the namespace paths in `config.json` (and drops the
+`gantry-oci` rewrites the namespace paths in `config.json` (and drops the
 hostname when the UTS namespace is shared) and execs `runc` with the
-original arguments. Set `KIRISAME_OCI_RUNTIME` in dockerd's environment to
+original arguments. Set `GANTRY_OCI_RUNTIME` in dockerd's environment to
 hand off to another runtime (crun, for example). The shim only accepts namespace paths under
-`/run/netns/` and `/run/kirisame/`.
+`/run/netns/` and `/run/gantry/`.
 
 ### kiri
 
-kiri speaks the Docker Engine API, so kirisame drives it with
+kiri speaks the Docker Engine API, so gantry drives it with
 `docker -H unix:///run/kiri/docker.sock` (override with
-`KIRISAME_KIRI_HOST`). Upstream kiri 0.2.0 only joins another container's
+`GANTRY_KIRI_HOST`). Upstream kiri 0.2.0 only joins another container's
 namespace (`container:<name>`). The patch in `contrib/kiri` adds Podman's
 `ns:<path>` network mode. kiri containers share the pod's network
 namespace and its `/etc/hosts` and `/etc/resolv.conf`. They keep their own
-UTS and IPC namespaces, so kirisame sets the pod hostname on them.
+UTS and IPC namespaces, so gantry sets the pod hostname on them.
 
 ## Running at boot
 
 Pods live under `/run`, so they are gone after a reboot. The unit in
-`contrib/systemd/kirisame@.service` runs `kirisame up -d --wait` for
-`/etc/kirisame/<name>/` at boot and `kirisame down` at shutdown:
+`contrib/systemd/gantry@.service` runs `gantry up -d --wait` for
+`/etc/gantry/<name>/` at boot and `gantry down` at shutdown:
 
 ```sh
-sudo cp contrib/systemd/kirisame@.service /etc/systemd/system/
-sudo systemctl enable --now kirisame@myproject
+sudo cp contrib/systemd/gantry@.service /etc/systemd/system/
+sudo systemctl enable --now gantry@myproject
 ```
 
 ## Things to know
@@ -168,7 +168,7 @@ sudo systemctl enable --now kirisame@myproject
   through the router, or use a parent the host does not use itself.
 * A parent interface carries macvlan or ipvlan links, not both.
 * ipvlan links share the parent's MAC address, so DHCP servers must key
-  leases on the client identifier (kirisame always sends one).
+  leases on the client identifier (gantry always sends one).
 * Pods rely on the LAN for DNS. Without `dns:` a static pod uses the host's
   upstream servers (skipping loopback resolvers such as systemd-resolved's
   127.0.0.53, which a pod cannot reach).
@@ -179,19 +179,19 @@ sudo systemctl enable --now kirisame@myproject
 
 | Variable | Default | Use |
 |---|---|---|
-| `KIRISAME_RUN_DIR` | `/run/kirisame` | State directory |
-| `KIRISAME_NETNS_DIR` | `/run/netns` | Where network namespaces are pinned |
-| `KIRISAME_DOCKER` | `docker` | Docker CLI (also used for kiri) |
-| `KIRISAME_PODMAN` | `podman` | Podman CLI |
-| `KIRISAME_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri's API socket |
-| `KIRISAME_NFT` | `nft` | nftables CLI |
-| `KIRISAME_LOG` | `info` | Log level |
+| `GANTRY_RUN_DIR` | `/run/gantry` | State directory |
+| `GANTRY_NETNS_DIR` | `/run/netns` | Where network namespaces are pinned |
+| `GANTRY_DOCKER` | `docker` | Docker CLI (also used for kiri) |
+| `GANTRY_PODMAN` | `podman` | Podman CLI |
+| `GANTRY_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri's API socket |
+| `GANTRY_NFT` | `nft` | nftables CLI |
+| `GANTRY_LOG` | `info` | Log level |
 
 ## Development
 
 ```sh
 cargo test                                   # unit tests (Linux)
-KIRISAME_DEV_HOST=user@host scripts/remote.sh cargo test   # from a Mac
+GANTRY_DEV_HOST=user@host scripts/remote.sh cargo test   # from a Mac
 sudo tests/integration/run.sh                # live tests; see the script header
 ```
 

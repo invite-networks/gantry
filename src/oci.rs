@@ -1,17 +1,17 @@
 //! The OCI runtime shim used with Docker. Docker cannot join a namespace
-//! by path, so kirisame registers `kirisame-oci` as a Docker runtime. On
-//! `create` it reads annotations kirisame put on the container, points the
+//! by path, so gantry registers `gantry-oci` as a Docker runtime. On
+//! `create` it reads annotations gantry put on the container, points the
 //! bundle's namespaces at the pod's pinned namespaces, and hands off to the
 //! real runtime (runc by default) with the original arguments.
 
 use serde_json::Value;
 
-pub const ANN_NETNS: &str = "io.kirisame.netns";
-pub const ANN_UTSNS: &str = "io.kirisame.utsns";
-pub const ANN_IPCNS: &str = "io.kirisame.ipcns";
+pub const ANN_NETNS: &str = "io.gantry.netns";
+pub const ANN_UTSNS: &str = "io.gantry.utsns";
+pub const ANN_IPCNS: &str = "io.gantry.ipcns";
 /// Namespace paths must live under these directories, so a container's
 /// annotations cannot point the shim at arbitrary files.
-pub const ALLOWED_NS_DIRS: &[&str] = &["/run/netns/", "/run/kirisame/", "/var/run/netns/"];
+pub const ALLOWED_NS_DIRS: &[&str] = &["/run/netns/", "/run/gantry/", "/var/run/netns/"];
 
 /// The subcommand and bundle directory found in a runtime command line.
 #[derive(Debug, PartialEq, Eq)]
@@ -82,13 +82,13 @@ pub fn rewrite_spec(spec: &mut Value, ns_exists: &dyn Fn(&str) -> bool) -> Resul
                 && !p.split('/').any(|c| c == "..");
             if !allowed {
                 return Err(format!(
-                    "kirisame: {kind} namespace path {p:?} is outside {}",
+                    "gantry: {kind} namespace path {p:?} is outside {}",
                     ALLOWED_NS_DIRS.join(", ")
                 ));
             }
             if !ns_exists(p) {
                 return Err(format!(
-                    "kirisame: pod {kind} namespace {p} does not exist; run `kirisame up` again"
+                    "gantry: pod {kind} namespace {p} does not exist; run `gantry up` again"
                 ));
             }
         }
@@ -96,12 +96,12 @@ pub fn rewrite_spec(spec: &mut Value, ns_exists: &dyn Fn(&str) -> bool) -> Resul
     let linux = spec
         .get_mut("linux")
         .and_then(Value::as_object_mut)
-        .ok_or("kirisame: config.json has no linux section")?;
+        .ok_or("gantry: config.json has no linux section")?;
     let namespaces = linux
         .entry("namespaces")
         .or_insert_with(|| Value::Array(vec![]))
         .as_array_mut()
-        .ok_or("kirisame: linux.namespaces is not a list")?;
+        .ok_or("gantry: linux.namespaces is not a list")?;
     for (kind, path) in &targets {
         let Some(p) = path else { continue };
         match namespaces
@@ -123,7 +123,7 @@ pub fn rewrite_spec(spec: &mut Value, ns_exists: &dyn Fn(&str) -> bool) -> Resul
         }
     }
     // Network sysctls would change the shared pod namespace from one
-    // container; kirisame sets them on the pod instead.
+    // container; gantry sets them on the pod instead.
     if targets[0].1.is_some() {
         if let Some(sysctl) = spec
             .pointer_mut("/linux/sysctl")
@@ -180,7 +180,7 @@ mod tests {
     fn rewrites_namespaces() {
         let mut spec = json!({
             "hostname": "abc",
-            "annotations": { ANN_NETNS: "/run/netns/p", ANN_UTSNS: "/run/kirisame/x/uts" },
+            "annotations": { ANN_NETNS: "/run/netns/p", ANN_UTSNS: "/run/gantry/x/uts" },
             "linux": {
                 "namespaces": [{"type": "mount"}, {"type": "network"}, {"type": "uts"}, {"type": "ipc"}],
                 "sysctl": {"net.ipv4.ip_forward": "1", "kernel.msgmax": "1"}
@@ -189,7 +189,7 @@ mod tests {
         assert!(rewrite_spec(&mut spec, &|_| true).unwrap());
         let ns = spec["linux"]["namespaces"].as_array().unwrap();
         assert_eq!(ns[1]["path"], "/run/netns/p");
-        assert_eq!(ns[2]["path"], "/run/kirisame/x/uts");
+        assert_eq!(ns[2]["path"], "/run/gantry/x/uts");
         assert!(ns[3].get("path").is_none());
         assert!(spec.get("hostname").is_none());
         assert!(spec["linux"]["sysctl"].get("net.ipv4.ip_forward").is_none());

@@ -1,7 +1,7 @@
 # Two pods on the LAN through macvlan. Adjust the network section to your
-# environment. Values below match the kirisame test host.
+# environment. Values below match the gantry test host.
 name: basic
-runtime: ${KIRISAME_RUNTIME:-docker}
+runtime: ${GANTRY_RUNTIME:-docker}
 
 networks:
   lan:

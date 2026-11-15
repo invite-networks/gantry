@@ -17,9 +17,8 @@ pub struct Ctx<'a> {
     pub lookup: &'a dyn Fn(&str) -> Option<String>,
 }
 
-/// Service keys kirisame knows and ignores, with the reason shown to the user.
+/// Service keys gantry knows and ignores, with the reason shown to the user.
 const IGNORED_SERVICE_KEYS: &[(&str, &str)] = &[
-    ("logging", "the engine's default log driver is used"),
     ("deploy", "pods run one instance of each service"),
     ("scale", "pods run one instance of each service"),
     (
@@ -30,7 +29,6 @@ const IGNORED_SERVICE_KEYS: &[(&str, &str)] = &[
         "external_links",
         "services reach each other by name through the pod hosts file",
     ),
-    ("platform", "the engine default platform is used"),
     ("stop_grace_period_ms", "unsupported"),
     ("cgroup_parent", "unsupported"),
     ("oom_score_adj", "unsupported"),
@@ -151,11 +149,6 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
             if key.starts_with("x-") {
                 continue;
             }
-            if key == "build" {
-                return Err(Error::config(format!(
-                    "service {svc_name}: build is not supported yet; build the image first and set image:"
-                )));
-            }
             match IGNORED_SERVICE_KEYS.iter().find(|(k, _)| k == key) {
                 Some((_, why)) => {
                     warnings.push(format!("service {svc_name}: ignoring {key} ({why})"))
@@ -261,7 +254,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
                     }
                     Some(m) => {
                         return Err(Error::config(format!(
-                            "service {svc_name}: network_mode {m:?} is not supported; kirisame always runs services in a pod"
+                            "service {svc_name}: network_mode {m:?} is not supported; gantry always runs services in a pod"
                         )));
                     }
                 }
@@ -393,7 +386,7 @@ impl Service {
 }
 
 /// Internal marker removed before the project is returned to callers.
-const RUNTIME_EXPLICIT: &str = "io.kirisame.internal.runtime-explicit";
+const RUNTIME_EXPLICIT: &str = "io.gantry.internal.runtime-explicit";
 
 fn project_name(ctx: &Ctx<'_>, from_file: Option<&str>) -> Result<String> {
     let raw = ctx
@@ -648,7 +641,7 @@ fn attachments(
         } else if addrs.is_empty() {
             if net.subnets.iter().any(|s| s.cidr.addr().is_ipv4()) {
                 return Err(Error::config(format!(
-                    "{owner}: network {net_name}: set ipv4_address or dhcp: true (kirisame does not allocate LAN addresses)"
+                    "{owner}: network {net_name}: set ipv4_address or dhcp: true (gantry does not allocate LAN addresses)"
                 )));
             }
             Addressing::None
@@ -1026,10 +1019,23 @@ fn service(
     warnings: &mut Vec<String>,
 ) -> Result<Service> {
     let err = |m: String| Error::config(format!("service {name}: {m}"));
-    let image = s.image.ok_or_else(|| err("image is required".into()))?;
+    let build = s
+        .build
+        .clone()
+        .map(|b| build_spec(b, ctx, warnings, name))
+        .transpose()?;
+    let image = match (s.image.clone(), &build) {
+        (Some(i), _) => i,
+        (None, Some(_)) => format!("{project}-{name}"),
+        (None, None) => return Err(err("image or build is required".into())),
+    };
+    let logging = s.logging.clone().map(|l| crate::project::Logging {
+        driver: l.driver,
+        options: list_or_map(l.options, ctx, false),
+    });
     let mut labels = list_or_map(s.labels, ctx, false);
-    if let Some(k) = labels.keys().find(|k| k.starts_with("io.kirisame.")) {
-        return Err(err(format!("label {k} is reserved for kirisame")));
+    if let Some(k) = labels.keys().find(|k| k.starts_with("io.gantry.")) {
+        return Err(err(format!("label {k} is reserved for gantry")));
     }
     let runtime = match (ctx.runtime_override, &s.runtime) {
         (Some(r), _) => r,
@@ -1222,7 +1228,8 @@ fn service(
         .collect();
 
     let pull_policy = match s.pull_policy.as_deref().unwrap_or("missing") {
-        "missing" | "if_not_present" | "build" => PullPolicy::Missing,
+        "missing" | "if_not_present" => PullPolicy::Missing,
+        "build" => PullPolicy::Build,
         "always" => PullPolicy::Always,
         "never" => PullPolicy::Never,
         o => return Err(err(format!("pull_policy {o:?} (missing, always, never)"))),
@@ -1243,6 +1250,9 @@ fn service(
         pod,
         runtime,
         image,
+        build,
+        logging,
+        platform: s.platform.clone(),
         container_name: s
             .container_name
             .unwrap_or_else(|| format!("{project}-{name}-1")),
@@ -1299,6 +1309,55 @@ fn service(
         ports,
         expose,
         profiles: s.profiles.unwrap_or_default(),
+    })
+}
+
+fn build_spec(
+    b: raw::Build,
+    ctx: &Ctx<'_>,
+    warnings: &mut Vec<String>,
+    service: &str,
+) -> Result<crate::project::Build> {
+    let l = match b {
+        raw::Build::Context(c) => raw::BuildLong {
+            context: Some(c),
+            ..Default::default()
+        },
+        raw::Build::Long(l) => *l,
+    };
+    for key in l.extra.keys().filter(|k| !k.starts_with("x-")) {
+        warnings.push(format!("service {service}: ignoring build key {key:?}"));
+    }
+    let context = l.context.unwrap_or_else(|| ".".into());
+    if context.contains("://") || context.starts_with("git@") {
+        return Err(Error::config(format!(
+            "service {service}: remote build contexts are not supported ({context})"
+        )));
+    }
+    let extra_hosts = list_or_map(l.extra_hosts, ctx, false)
+        .into_iter()
+        .map(|(k, v)| format!("{k}:{v}"))
+        .collect();
+    Ok(crate::project::Build {
+        context: resolve_path(&ctx.project_dir, &context),
+        dockerfile: l.dockerfile,
+        dockerfile_inline: l.dockerfile_inline,
+        args: list_or_map(l.args, ctx, true),
+        target: l.target,
+        labels: list_or_map(l.labels, ctx, false),
+        pull: l.pull,
+        no_cache: l.no_cache,
+        network: l.network,
+        cache_from: l.cache_from.unwrap_or_default(),
+        tags: l.tags.unwrap_or_default(),
+        extra_hosts,
+        shm_size: l
+            .shm_size
+            .map(|m| {
+                parse_bytes(&m.into_string())
+                    .map_err(|e| Error::config(format!("service {service}: build.shm_size: {e}")))
+            })
+            .transpose()?,
     })
 }
 
@@ -1568,8 +1627,8 @@ mod tests {
                 "cycle",
             ),
             (
-                "name: t\nservices:\n  a: { build: . }\n",
-                "build is not supported",
+                "name: t\nservices:\n  a: { build: \"https://example.com/r.git\" }\n",
+                "remote build contexts",
             ),
             (
                 "name: t\nbogus: 1\nservices: {}\n",

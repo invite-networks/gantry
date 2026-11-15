@@ -1,0 +1,19 @@
+# Brings a gantry project up at boot and down at shutdown.
+# Put the project in /etc/gantry/<name>/gantry.yaml, then:
+#   systemctl enable --now gantry@<name>
+[Unit]
+Description=gantry project %i
+Wants=network-online.target
+After=network-online.target docker.service kiri.service
+ConditionPathIsDirectory=/etc/gantry/%i
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/etc/gantry/%i
+ExecStart=/usr/local/bin/gantry up -d --wait
+ExecStop=/usr/local/bin/gantry down
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

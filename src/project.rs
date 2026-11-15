@@ -1,5 +1,5 @@
 //! The normalized project model. The compose loader turns YAML into these
-//! types after validation; everything else in kirisame works from them.
+//! types after validation; everything else in gantry works from them.
 
 use indexmap::IndexMap;
 use ipnet::IpNet;
@@ -120,7 +120,7 @@ pub struct Subnet {
     pub gateway: Option<IpAddr>,
 }
 
-/// A pod: one set of namespaces created by kirisame, shared by every
+/// A pod: one set of namespaces created by gantry, shared by every
 /// service in it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pod {
@@ -257,6 +257,10 @@ pub struct Service {
     pub pod: String,
     pub runtime: RuntimeKind,
     pub image: String,
+    /// Built locally instead of pulled.
+    pub build: Option<Build>,
+    pub logging: Option<Logging>,
+    pub platform: Option<String>,
     pub container_name: String,
     pub command: Option<Vec<String>>,
     pub entrypoint: Option<Vec<String>>,
@@ -339,4 +343,32 @@ pub enum PullPolicy {
     Missing,
     Always,
     Never,
+    /// Build every time (`pull_policy: build`).
+    Build,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Build {
+    /// Absolute path of the build context.
+    pub context: std::path::PathBuf,
+    /// Dockerfile path relative to the context (or absolute).
+    pub dockerfile: Option<String>,
+    pub dockerfile_inline: Option<String>,
+    pub args: IndexMap<String, String>,
+    pub target: Option<String>,
+    pub labels: IndexMap<String, String>,
+    pub pull: bool,
+    pub no_cache: bool,
+    pub network: Option<String>,
+    pub cache_from: Vec<String>,
+    /// Extra tags besides the service image.
+    pub tags: Vec<String>,
+    pub extra_hosts: Vec<String>,
+    pub shm_size: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Logging {
+    pub driver: Option<String>,
+    pub options: IndexMap<String, String>,
 }

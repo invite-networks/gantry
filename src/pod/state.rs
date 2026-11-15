@@ -1,4 +1,4 @@
-//! What kirisame records about a running pod, under the run directory.
+//! What gantry records about a running pod, under the run directory.
 
 use crate::errors::{Context, Error, Result};
 use ipnet::IpNet;
@@ -6,16 +6,16 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-/// Root of kirisame's runtime state. Overridable for tests.
+/// Root of gantry's runtime state. Overridable for tests.
 pub fn run_dir() -> PathBuf {
-    std::env::var_os("KIRISAME_RUN_DIR")
+    std::env::var_os("GANTRY_RUN_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/run/kirisame"))
+        .unwrap_or_else(|| PathBuf::from("/run/gantry"))
 }
 
 /// Where network namespaces are pinned, shared with `ip netns`.
 pub fn netns_dir() -> PathBuf {
-    std::env::var_os("KIRISAME_NETNS_DIR")
+    std::env::var_os("GANTRY_NETNS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/run/netns"))
 }
@@ -30,7 +30,7 @@ pub fn pod_dir(project: &str, pod: &str) -> PathBuf {
 
 /// `ip netns` name of a pod's network namespace.
 pub fn netns_name(project: &str, pod: &str) -> String {
-    format!("ks-{project}-{pod}")
+    format!("gt-{project}-{pod}")
 }
 
 pub fn netns_path(project: &str, pod: &str) -> PathBuf {

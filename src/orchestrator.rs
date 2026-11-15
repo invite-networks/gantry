@@ -1,9 +1,10 @@
 //! The commands: bringing pods and their services up and down in order.
 
-use crate::engine::{ContainerInfo, Engine, create_args, hash_of};
+use crate::engine::{ContainerInfo, Engine, create_spec, hash_of};
 use crate::errors::{Context, Error, Result};
 use crate::pod::{self, Ensured, state};
 use crate::project::{DependsCondition, Project, PullPolicy, RuntimeKind, Service};
+use futures_util::future::try_join_all;
 use indexmap::{IndexMap, IndexSet};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -17,6 +18,8 @@ pub struct UpOptions {
     pub wait_timeout: Option<Duration>,
     /// Wait for every started service to be running or healthy.
     pub wait: bool,
+    /// Build images even when they exist.
+    pub build: bool,
 }
 
 pub struct Orchestrator {
@@ -101,24 +104,52 @@ impl Orchestrator {
         Ok(order.into_iter().collect())
     }
 
-    pub async fn up(&self, opts: &UpOptions) -> Result<()> {
-        let order = self.start_order(&opts.services)?;
-        for e in self.engines.values() {
-            if order
-                .iter()
-                .any(|s| self.project.services[s].runtime == e.kind)
-            {
-                e.check().await?;
+    /// Groups services into dependency levels: every service's
+    /// dependencies sit in an earlier level, so one level can run in
+    /// parallel.
+    pub fn levels(&self, order: &[String]) -> Vec<Vec<String>> {
+        let mut level: IndexMap<String, usize> = IndexMap::new();
+        for name in order {
+            let l = self
+                .project
+                .services
+                .get(name)
+                .map(|s| {
+                    s.depends_on
+                        .keys()
+                        .filter_map(|d| level.get(d).map(|l| l + 1))
+                        .max()
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0);
+            level.insert(name.clone(), l);
+        }
+        let depth = level.values().max().map_or(0, |m| m + 1);
+        let mut out = vec![Vec::new(); depth];
+        for (name, l) in level {
+            if let Some(v) = out.get_mut(l) {
+                v.push(name);
             }
         }
+        out
+    }
+
+    pub async fn up(&self, opts: &UpOptions) -> Result<()> {
+        let order = self.start_order(&opts.services)?;
+        let used: Vec<&Engine> = self
+            .engines
+            .values()
+            .filter(|e| {
+                order
+                    .iter()
+                    .any(|s| self.project.services[s].runtime == e.kind)
+            })
+            .collect();
+        try_join_all(used.iter().map(|e| e.check())).await?;
         let _lock = lock(&self.project.name)?;
 
         // Images first, so a failed pull leaves nothing half started.
-        for name in &order {
-            let svc = &self.project.services[name];
-            self.ensure_image(svc, opts.pull.unwrap_or(svc.pull_policy))
-                .await?;
-        }
+        self.ensure_images(&order, opts.pull, opts.build).await?;
         self.ensure_volumes(&order).await?;
 
         // Pods, then hosts files and firewalls once every address is known.
@@ -126,7 +157,6 @@ impl Orchestrator {
             .iter()
             .map(|s| self.project.services[s].pod.clone())
             .collect();
-        let mut recreated: IndexSet<String> = IndexSet::new();
         let mut states = IndexMap::new();
         let existing = self.containers().await;
         for pod_name in &pods {
@@ -136,78 +166,110 @@ impl Orchestrator {
                 .is_some_and(|s| s.config_hash != hash || !pod::ns::is_pinned(&s.netns));
             if changed {
                 // Containers hold the old namespaces; remove them first.
-                for (e, c) in existing.iter().filter(|(_, c)| &c.pod == pod_name) {
+                let stale: Vec<&(Engine, ContainerInfo)> = existing
+                    .iter()
+                    .filter(|(_, c)| &c.pod == pod_name)
+                    .collect();
+                try_join_all(stale.iter().map(|(e, c)| async move {
                     println!("Removing {} (pod {pod_name} changed)", c.name);
-                    e.remove(&c.name).await?;
-                }
+                    e.remove(&c.name).await
+                }))
+                .await?;
             }
             let (st, how) = pod::ensure(&self.project, pod).await?;
             if how == Ensured::Created {
                 println!("Pod {pod_name} created ({})", describe_pod(&st));
-                recreated.insert(pod_name.clone());
             }
             states.insert(pod_name.clone(), st);
         }
         self.project.save_snapshot()?;
         pod::refresh(&self.project)?;
 
-        let mut started: Vec<String> = Vec::new();
-        for name in &order {
-            let svc = &self.project.services[name];
-            for (dep, cond) in &svc.depends_on {
-                self.wait_for(
-                    dep,
-                    *cond,
-                    opts.wait_timeout.unwrap_or(Duration::from_secs(300)),
-                )
-                .await?;
-            }
-            let st = &states[&svc.pod];
-            self.ensure_container(svc, st, opts.force_recreate).await?;
-            started.push(name.clone());
+        let timeout = opts.wait_timeout.unwrap_or(Duration::from_secs(300));
+        let states = &states;
+        for level in self.levels(&order) {
+            try_join_all(level.iter().map(|name| async move {
+                let svc = &self.project.services[name];
+                for (dep, cond) in &svc.depends_on {
+                    self.wait_for(dep, *cond, timeout).await?;
+                }
+                self.ensure_container(svc, &states[&svc.pod], opts.force_recreate)
+                    .await
+            }))
+            .await?;
         }
         if opts.wait {
-            for name in &started {
+            try_join_all(order.iter().map(|name| {
                 let svc = &self.project.services[name];
                 let cond = if svc.healthcheck.as_ref().is_some_and(|h| !h.disabled) {
                     DependsCondition::ServiceHealthy
                 } else {
                     DependsCondition::ServiceStarted
                 };
-                self.wait_for(
-                    name,
-                    cond,
-                    opts.wait_timeout.unwrap_or(Duration::from_secs(300)),
-                )
-                .await?;
-            }
+                self.wait_for(name, cond, timeout)
+            }))
+            .await?;
         }
         Ok(())
     }
 
-    async fn ensure_image(&self, svc: &Service, policy: PullPolicy) -> Result<()> {
-        let e = self.engine(svc.runtime);
-        match policy {
-            PullPolicy::Always => e.pull(&svc.image).await,
-            PullPolicy::Missing => {
-                if e.image_exists(&svc.image).await {
-                    Ok(())
-                } else {
-                    println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
-                    e.pull(&svc.image).await
-                }
+    /// Builds or pulls what the services need. Pulls run in parallel;
+    /// builds run one at a time so their output stays readable.
+    pub async fn ensure_images(
+        &self,
+        order: &[String],
+        pull: Option<PullPolicy>,
+        force_build: bool,
+    ) -> Result<()> {
+        let mut seen: IndexSet<(RuntimeKind, String)> = IndexSet::new();
+        let mut builds: Vec<&Service> = Vec::new();
+        let mut pulls: Vec<&Service> = Vec::new();
+        for name in order {
+            let svc = &self.project.services[name];
+            if !seen.insert((svc.runtime, svc.image.clone())) {
+                continue;
             }
-            PullPolicy::Never => {
-                if e.image_exists(&svc.image).await {
-                    Ok(())
-                } else {
-                    Err(Error::engine(format!(
-                        "{}: image {} is not present and pull_policy is never",
-                        svc.name, svc.image
-                    )))
+            let e = self.engine(svc.runtime);
+            let policy = pull.unwrap_or(svc.pull_policy);
+            if svc.build.is_some() {
+                let present = e.image_exists(&image_ref(svc)).await?;
+                if force_build || policy == PullPolicy::Build || !present {
+                    builds.push(svc);
+                }
+                continue;
+            }
+            match policy {
+                PullPolicy::Always => pulls.push(svc),
+                PullPolicy::Missing | PullPolicy::Build => {
+                    if !e.image_exists(&svc.image).await? {
+                        pulls.push(svc);
+                    }
+                }
+                PullPolicy::Never => {
+                    if !e.image_exists(&svc.image).await? {
+                        return Err(Error::engine(format!(
+                            "{}: image {} is not present and pull_policy is never",
+                            svc.name, svc.image
+                        )));
+                    }
                 }
             }
         }
+        try_join_all(pulls.iter().map(|svc| async move {
+            println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
+            let t = std::time::Instant::now();
+            self.engine(svc.runtime).pull(&svc.image).await?;
+            println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
+            Ok::<(), Error>(())
+        }))
+        .await?;
+        for svc in builds {
+            println!("Building {} for {} ({})", svc.image, svc.name, svc.runtime);
+            self.engine(svc.runtime)
+                .build(svc, &self.project.name)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn ensure_volumes(&self, order: &[String]) -> Result<()> {
@@ -258,16 +320,8 @@ impl Orchestrator {
         force: bool,
     ) -> Result<()> {
         let e = self.engine(svc.runtime);
-        let image_cmd = if svc.runtime != RuntimeKind::Podman
-            && svc.entrypoint.as_ref().is_some_and(|ep| ep.len() > 1)
-            && svc.command.is_none()
-        {
-            Some(e.image_cmd(&svc.image).await?)
-        } else {
-            None
-        };
-        let args = create_args(&self.project, svc, st, image_cmd);
-        let want = hash_of(&args);
+        let body = create_spec(&self.project, svc, st);
+        let want = hash_of(&body);
 
         // The same container name on another engine (runtime changed).
         for other in self.all_engines().iter().filter(|o| o.kind != e.kind) {
@@ -306,7 +360,7 @@ impl Orchestrator {
                 svc.container_name, svc.runtime, svc.pod
             );
         }
-        e.create(&args).await?;
+        e.create(&svc.container_name, body).await?;
         e.start(&svc.container_name).await
     }
 
@@ -321,6 +375,7 @@ impl Orchestrator {
         let e = self.engine(svc.runtime);
         let deadline = tokio::time::Instant::now() + timeout;
         let mut announced = false;
+        let mut last_check = None::<tokio::time::Instant>;
         loop {
             let info = e.inspect(&svc.container_name).await?;
             let ok = match (&info, cond) {
@@ -374,42 +429,57 @@ impl Orchestrator {
                 );
                 announced = true;
             }
-            if svc.runtime == RuntimeKind::Podman && cond == DependsCondition::ServiceHealthy {
+            let now = tokio::time::Instant::now();
+            if cond == DependsCondition::ServiceHealthy
+                && last_check.is_none_or(|t| now - t >= Duration::from_secs(1))
+            {
                 // Podman runs healthchecks from systemd timers when it can;
                 // run one directly so waiting works everywhere.
-                let _ = e.run(["healthcheck", "run", &svc.container_name]).await;
+                let _ = e.run_healthcheck(&svc.container_name).await;
+                last_check = Some(now);
             }
-            if tokio::time::Instant::now() >= deadline {
+            if now >= deadline {
                 return Err(Error::engine(format!("timed out waiting for {service}")));
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
     pub async fn down(&self, volumes: bool, timeout: Option<u64>) -> Result<()> {
         let _lock = lock(&self.project.name)?;
         let containers = self.containers().await;
-        // Reverse dependency order for known services, then the rest.
+        // Reverse dependency levels; containers of unknown services first.
         let order = self.start_order(&[]).unwrap_or_default();
-        let mut sorted: Vec<&(Engine, ContainerInfo)> = containers.iter().collect();
-        sorted.sort_by_key(|(_, c)| {
-            std::cmp::Reverse(
-                order
-                    .iter()
-                    .position(|s| *s == c.service)
-                    .unwrap_or(usize::MAX),
-            )
-        });
-        for (e, c) in &sorted {
-            println!("Stopping {}", c.name);
+        let mut groups: Vec<Vec<String>> = self.levels(&order);
+        groups.reverse();
+        let known: IndexSet<&String> = order.iter().collect();
+        let unknown: Vec<&(Engine, ContainerInfo)> = containers
+            .iter()
+            .filter(|(_, c)| !known.contains(&c.service))
+            .collect();
+        let stop_rm = |e: &Engine, c: &ContainerInfo| {
             let grace = self
                 .project
                 .services
                 .get(&c.service)
                 .and_then(|s| s.stop_grace_period)
                 .map(|d| d.as_secs());
-            let _ = e.stop(&c.name, timeout.or(grace)).await;
-            e.remove(&c.name).await?;
+            let (e, name) = (e.clone(), c.name.clone());
+            async move {
+                println!("Stopping {name}");
+                let _ = e.stop(&name, timeout.or(grace)).await;
+                e.remove(&name).await
+            }
+        };
+        try_join_all(unknown.iter().map(|(e, c)| stop_rm(e, c))).await?;
+        for group in groups {
+            try_join_all(
+                containers
+                    .iter()
+                    .filter(|(_, c)| group.contains(&c.service))
+                    .map(|(e, c)| stop_rm(e, c)),
+            )
+            .await?;
         }
         let mut pods: IndexSet<String> = state::list_pods(&self.project.name).into_iter().collect();
         pods.extend(self.project.pods.keys().cloned());
@@ -443,20 +513,26 @@ impl Orchestrator {
         if !services.is_empty() {
             order.retain(|s| services.contains(s));
         }
-        for name in order.iter().rev() {
-            let svc = &self.project.services[name];
-            let e = self.engine(svc.runtime);
-            if e.inspect(&svc.container_name)
-                .await?
-                .is_some_and(|c| c.status == "running")
-            {
-                println!("Stopping {}", svc.container_name);
-                e.stop(
-                    &svc.container_name,
-                    timeout.or(svc.stop_grace_period.map(|d| d.as_secs())),
-                )
-                .await?;
-            }
+        let mut levels = self.levels(&order);
+        levels.reverse();
+        for level in levels {
+            try_join_all(level.iter().map(|name| async move {
+                let svc = &self.project.services[name];
+                let e = self.engine(svc.runtime);
+                if e.inspect(&svc.container_name)
+                    .await?
+                    .is_some_and(|c| c.status == "running")
+                {
+                    println!("Stopping {}", svc.container_name);
+                    e.stop(
+                        &svc.container_name,
+                        timeout.or(svc.stop_grace_period.map(|d| d.as_secs())),
+                    )
+                    .await?;
+                }
+                Ok::<(), Error>(())
+            }))
+            .await?;
         }
         Ok(())
     }
@@ -466,36 +542,40 @@ impl Orchestrator {
         if !services.is_empty() {
             order.retain(|s| services.contains(s));
         }
-        for name in &order {
-            let svc = &self.project.services[name];
-            let st = state::PodState::load(&self.project.name, &svc.pod)?
-                .filter(|s| pod::ns::is_pinned(&s.netns))
-                .ok_or_else(|| {
-                    Error::State(format!("pod {} is not up; run `kirisame up`", svc.pod))
-                })?;
-            let e = self.engine(svc.runtime);
-            match e.inspect(&svc.container_name).await? {
-                Some(c) if c.pod_id != st.id => {
-                    return Err(Error::State(format!(
-                        "{} belongs to an older pod; run `kirisame up`",
-                        c.name
-                    )));
-                }
-                Some(c) if c.status == "running" => {}
-                Some(_) => {
-                    println!("Starting {}", svc.container_name);
-                    e.start(&svc.container_name).await?;
-                }
-                None => {
-                    return Err(Error::State(format!(
-                        "{} does not exist; run `kirisame up`",
-                        svc.container_name
-                    )));
-                }
-            }
+        for level in self.levels(&order) {
+            try_join_all(level.iter().map(|name| self.start_one(name))).await?;
         }
         Ok(())
     }
+
+    async fn start_one(&self, name: &str) -> Result<()> {
+        let svc = &self.project.services[name];
+        let st = state::PodState::load(&self.project.name, &svc.pod)?
+            .filter(|s| pod::ns::is_pinned(&s.netns))
+            .ok_or_else(|| Error::State(format!("pod {} is not up; run `gantry up`", svc.pod)))?;
+        let e = self.engine(svc.runtime);
+        match e.inspect(&svc.container_name).await? {
+            Some(c) if c.pod_id != st.id => Err(Error::State(format!(
+                "{} belongs to an older pod; run `gantry up`",
+                c.name
+            ))),
+            Some(c) if c.status == "running" => Ok(()),
+            Some(_) => {
+                println!("Starting {}", svc.container_name);
+                e.start(&svc.container_name).await
+            }
+            None => Err(Error::State(format!(
+                "{} does not exist; run `gantry up`",
+                svc.container_name
+            ))),
+        }
+    }
+}
+
+/// The image reference to check for a service (built Podman images live
+/// under `localhost/`).
+fn image_ref(svc: &Service) -> String {
+    crate::engine::spec::service_image(svc)
 }
 
 pub fn describe_pod(st: &state::PodState) -> String {
@@ -541,7 +621,7 @@ pub fn lock(project: &str) -> Result<Lock> {
     match nix::fcntl::Flock::lock(f, nix::fcntl::FlockArg::LockExclusiveNonblock) {
         Ok(l) => Ok(Lock(l)),
         Err((_, nix::Error::EWOULDBLOCK)) => Err(Error::State(format!(
-            "another kirisame command is working on project {project}"
+            "another gantry command is working on project {project}"
         ))),
         Err((_, e)) => Err(e).ctx(|| format!("lock {}", path.display())),
     }

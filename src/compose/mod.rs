@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 /// File names tried, in order, when no `-f` is given.
 pub const DEFAULT_FILES: &[&str] = &[
-    "kirisame.yaml",
-    "kirisame.yml",
+    "gantry.yaml",
+    "gantry.yml",
     "compose.yaml",
     "compose.yml",
     "docker-compose.yaml",
