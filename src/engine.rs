@@ -134,11 +134,13 @@ impl Engine {
     }
 
     pub async fn image_exists(&self, image: &str) -> bool {
-        self.run(["image", "inspect", image]).await.is_ok()
+        let image = qualify_image(self.kind, image);
+        self.run(["image", "inspect", &image]).await.is_ok()
     }
 
     /// Pulls an image, showing the engine's progress output.
     pub async fn pull(&self, image: &str) -> Result<()> {
+        let image = &qualify_image(self.kind, image);
         let status = self
             .cmd()
             .args(["pull", image])
@@ -156,6 +158,7 @@ impl Engine {
     /// The image's default command, used when a multi word entrypoint has
     /// to be split for the docker CLI.
     pub async fn image_cmd(&self, image: &str) -> Result<Vec<String>> {
+        let image = &qualify_image(self.kind, image);
         let out = self
             .run([
                 "image",
@@ -261,6 +264,25 @@ impl Engine {
 
     pub async fn volume_remove(&self, name: &str) -> Result<()> {
         self.run(["volume", "rm", name]).await.map(drop)
+    }
+}
+
+/// Compose files name images the Docker way: a bare name means Docker
+/// Hub. Podman needs the registry spelled out unless short name aliases are
+/// configured, so qualify the name for it.
+pub fn qualify_image(kind: RuntimeKind, image: &str) -> String {
+    if kind != RuntimeKind::Podman {
+        return image.to_string();
+    }
+    let first = image.split('/').next().unwrap_or("");
+    let has_registry =
+        image.contains('/') && (first.contains('.') || first.contains(':') || first == "localhost");
+    if has_registry {
+        image.to_string()
+    } else if image.contains('/') {
+        format!("docker.io/{image}")
+    } else {
+        format!("docker.io/library/{image}")
     }
 }
 
@@ -530,7 +552,7 @@ pub fn create_args(
     );
     a.push("--label".into());
     a.push(format!("{LABEL_HASH}={hash}"));
-    a.push(svc.image.clone());
+    a.push(qualify_image(svc.runtime, &svc.image));
     a.extend(command.unwrap_or_default());
     a
 }
@@ -636,6 +658,27 @@ services:
             "{s}"
         );
         assert!(!s.contains("/etc/hostname"));
+    }
+
+    #[test]
+    fn podman_images_are_qualified() {
+        assert_eq!(
+            qualify_image(RuntimeKind::Podman, "redis:7"),
+            "docker.io/library/redis:7"
+        );
+        assert_eq!(
+            qualify_image(RuntimeKind::Podman, "bitnami/redis"),
+            "docker.io/bitnami/redis"
+        );
+        assert_eq!(
+            qualify_image(RuntimeKind::Podman, "ghcr.io/a/b:1"),
+            "ghcr.io/a/b:1"
+        );
+        assert_eq!(
+            qualify_image(RuntimeKind::Podman, "localhost/x"),
+            "localhost/x"
+        );
+        assert_eq!(qualify_image(RuntimeKind::Docker, "redis:7"), "redis:7");
     }
 
     #[test]

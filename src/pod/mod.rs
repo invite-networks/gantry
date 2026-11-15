@@ -164,6 +164,27 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
                 }
             }
         }
+        // Announce static IPv4 addresses so the LAN forgets stale MACs.
+        let link_mac = inner.mac(idx).await?;
+        if let Some(m) = link_mac {
+            let v4: Vec<std::net::Ipv4Addr> = addresses
+                .iter()
+                .filter_map(|a| match a.addr() {
+                    IpAddr::V4(v) => Some(v),
+                    IpAddr::V6(_) => None,
+                })
+                .collect();
+            if !v4.is_empty() {
+                ns::in_netns(&netns, move || {
+                    for ip in &v4 {
+                        if let Err(e) = link::gratuitous_arp(idx, m, *ip) {
+                            tracing::warn!("{e}");
+                        }
+                    }
+                    Ok(())
+                })?;
+            }
+        }
         interfaces.push(InterfaceState {
             ifname: att.ifname.clone(),
             network: att.network.clone(),

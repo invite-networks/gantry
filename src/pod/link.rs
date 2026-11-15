@@ -268,3 +268,63 @@ mod tests {
         assert_eq!(format_mac(&[2, 0, 0, 0, 0xab, 1]), "02:00:00:00:ab:01");
     }
 }
+
+/// Sends gratuitous ARP (request and reply forms) for `ip` on interface
+/// `index`, so switches and routers drop any stale entry for the address.
+/// Must run in the network namespace that owns the interface.
+pub fn gratuitous_arp(index: u32, mac: [u8; 6], ip: std::net::Ipv4Addr) -> Result<()> {
+    const ETH_P_ARP: u16 = 0x0806;
+    // SAFETY: plain socket(2) call; the descriptor is wrapped right away.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_PACKET,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            i32::from(ETH_P_ARP.to_be()),
+        )
+    };
+    if fd < 0 {
+        return Err(Error::network(format!(
+            "arp socket: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: fd is a fresh, owned descriptor.
+    let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    // SAFETY: sockaddr_ll is plain old data; zeroed is a valid value.
+    let mut sll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+    sll.sll_family = libc::AF_PACKET as u16;
+    sll.sll_protocol = ETH_P_ARP.to_be();
+    sll.sll_ifindex = index as i32;
+    sll.sll_halen = 6;
+    sll.sll_addr[..6].copy_from_slice(&[0xff; 6]);
+    for op in [1u16, 2u16] {
+        let mut pkt = Vec::with_capacity(28);
+        pkt.extend_from_slice(&1u16.to_be_bytes()); // Ethernet
+        pkt.extend_from_slice(&0x0800u16.to_be_bytes()); // IPv4
+        pkt.push(6);
+        pkt.push(4);
+        pkt.extend_from_slice(&op.to_be_bytes());
+        pkt.extend_from_slice(&mac);
+        pkt.extend_from_slice(&ip.octets());
+        pkt.extend_from_slice(if op == 1 { &[0u8; 6] } else { &[0xffu8; 6] });
+        pkt.extend_from_slice(&ip.octets());
+        // SAFETY: pkt and sll outlive the call; lengths match the buffers.
+        let r = unsafe {
+            libc::sendto(
+                std::os::fd::AsRawFd::as_raw_fd(&fd),
+                pkt.as_ptr().cast(),
+                pkt.len(),
+                0,
+                std::ptr::addr_of!(sll).cast(),
+                std::mem::size_of::<libc::sockaddr_ll>() as u32,
+            )
+        };
+        if r < 0 {
+            return Err(Error::network(format!(
+                "send gratuitous arp for {ip}: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+    }
+    Ok(())
+}

@@ -387,6 +387,9 @@ impl Client {
             Ipv4Net::new(lease.address, lease.prefix).map_err(|e| Error::Dhcp(e.to_string()))?,
         );
         nl.add_address(index, net).await?;
+        if let Err(e) = super::link::gratuitous_arp(index, self.mac, lease.address) {
+            tracing::warn!("{e}");
+        }
         if self.cfg.default_route {
             if let Some(r) = lease.router {
                 nl.set_default_route(index, IpAddr::V4(r)).await?;
