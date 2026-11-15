@@ -140,7 +140,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-RT-03 | kiri shall be reached at `/run/kiri/docker.sock`. | M |
 | FR-RT-04 | Podman shall be reached through its Docker-compatible API at `/run/podman/podman.sock` (systemd socket activation). If the socket does not answer, Gantry shall run `systemctl start podman.socket`; if that is unavailable, it shall start a private `podman system service` on a socket in its run directory that exits after 5 idle minutes. | M |
 | FR-RT-05 | Docker containers shall join the pod through the `gantry-oci` runtime shim, using the `gantry` runtime, network mode `none`, and `io.gantry.netns`, `io.gantry.utsns` and `io.gantry.ipcns` annotations. | M |
-| FR-RT-06 | Podman and kiri containers shall join the pod network namespace with network mode `ns:<path>`. Podman shall also join the shared UTS and IPC namespaces. kiri containers shall get the pod hostname set on them. | M |
+| FR-RT-06 | Podman and kiri containers shall join the pod's network, UTS and IPC namespaces with modes `ns:<path>` (kiri with the patches in `contrib/kiri`). | M |
 | FR-RT-07 | Services in one pod shall be allowed to use different runtimes. | M |
 | FR-RT-08 | The runtime shall be selectable per project (`runtime:`), per pod, per service, and forced for all services with `--runtime`. | M |
 | FR-RT-09 | `gantry setup docker` shall register the shim in the Docker daemon configuration and reload `dockerd`. `gantry setup podman` shall run `systemctl enable --now podman.socket`. | M |
@@ -179,6 +179,11 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CLI-09 | Commands that change a project shall hold a per-project lock so two runs cannot interleave. | M |
 | FR-CLI-10 | Global flags: `-f`, `-p`, `--project-directory`, `--env-file`, `--profile`, `--runtime`, `--log-level`. | M |
 | FR-CLI-11 | `build [svc...]` shall build the images of services that have `build:`. `up --build` shall build before starting. | M |
+| FR-CLI-12 | `run [--rm] [-T] [--no-deps] [-e] [-u] [-w] [--entrypoint] svc [cmd...]` shall start a one-off container of the service in its pod, attached, bring up its dependencies unless `--no-deps`, and exit with the container's exit code. One-off containers shall be listed by `ps` and removed by `down`. | M |
+| FR-CLI-13 | `kill [-s SIG]`, `rm [-s]` and `top` shall signal services, remove stopped service containers, and list service processes. | S |
+| FR-CLI-14 | `ls` shall list projects with pods on the host; `version` shall report Gantry's version and each engine's version and API version. | S |
+| FR-CLI-15 | `completion <shell>` shall print shell completions; the package shall install completions for bash, zsh and fish and a man page. | S |
+| FR-CLI-16 | Services in the same dependency level shall be created and started in parallel; `down` and `stop` shall act on reverse levels in parallel; pulls shall run in parallel. | M |
 
 ### 5.9 State and lifecycle
 

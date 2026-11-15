@@ -277,7 +277,7 @@ mounts on all runtimes [FR-DNS-01].
 |---|---|
 | Docker | `Runtime: "gantry"`, `NetworkMode: "none"`, `Annotations: {io.gantry.netns, io.gantry.utsns, io.gantry.ipcns}`. Hostname only when UTS is not shared. [FR-RT-05] |
 | Podman | `NetworkMode: "ns:<netns>"`, `UTSMode: "ns:<uts>"`, `IpcMode: "ns:<ipc>"`. Hostname when UTS is not shared. [FR-RT-06] |
-| kiri | `NetworkMode: "ns:<netns>"`, `Hostname: <pod hostname>`. kiri keeps its own UTS and IPC namespaces. [FR-RT-06] |
+| kiri | Same as Podman: `NetworkMode`, `UTSMode` and `IpcMode` set to `ns:<path>`. Needs both patches in `contrib/kiri`. [FR-RT-06] |
 
 ### 6.7 The Docker shim
 
@@ -475,7 +475,9 @@ Procedures are in the [runbooks](../runbooks/README.md).
 
 ## 12. Open items
 
-* To be confirmed: whether every Compose build key works against kiri's
-  classic build endpoint (section 6.8).
-* kiri sharing UTS and IPC with the pod needs another kiri patch.
-* Restricting the remaining `GANTRY_*` overrides in release builds.
+* A plain kiri build works against kiri's classic build endpoint; build
+  keys beyond context, Dockerfile and args are not yet verified on kiri
+  (section 6.8).
+* The kiri patches are local and not yet proposed upstream.
+* Socket and directory `GANTRY_*` overrides remain in release builds;
+  the `nft` binary override is debug only.

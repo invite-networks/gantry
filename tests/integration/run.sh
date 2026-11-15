@@ -36,11 +36,10 @@ e2e() {
   ok "up ($rt)"
   check "second up changes nothing" sh -c "$K up -d | grep -qv Creating"
   check "pod web has $GT_IP1" sh -c "$K exec -T client ip -4 addr show eth0 | grep -q 'inet $GT_IP1/'"
-  if [ "$rt" = kiri ]; then
-    check "hostname set on kiri container" sh -c "$K exec -T client hostname | grep -qx webhost"
-  else
-    check "shared hostname" sh -c "$K exec -T client hostname | grep -qx webhost && $K exec -T server hostname | grep -qx webhost"
-  fi
+  check "shared hostname" sh -c "$K exec -T client hostname | grep -qx webhost && $K exec -T server hostname | grep -qx webhost"
+  for ns in uts ipc net; do
+    check "shared $ns namespace" sh -c "[ \"\$($K exec -T client readlink /proc/self/ns/$ns)\" = \"\$($K exec -T server readlink /proc/self/ns/$ns)\" ]"
+  done
   check "loopback between services in a pod" sh -c "$K exec -T client sh -c 'nc -w 3 127.0.0.1 8080' | grep -q hello-from-web"
   check "service name resolves to loopback" sh -c "$K exec -T client ping -c1 -W1 server | grep -q '127.0.0.1'"
   check "other pod reachable by service name" sh -c "$K exec -T client nc -z -w 3 redis 6379"

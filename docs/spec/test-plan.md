@@ -71,7 +71,7 @@ became `docker_spec`, `podman_and_kiri_spec` and
 `hash_is_stable_and_tracks_changes`, which check the create body: for
 Docker, `Runtime: gantry`, `NetworkMode: none`, the three annotations, the
 reserved labels and read-only `/etc` mounts; for Podman, `ns:` for network,
-UTS and IPC; for kiri, `ns:` for network and the pod hostname.
+UTS and IPC, and the same for kiri.
 
 ### 3.2 Unit tests to add
 
@@ -108,13 +108,13 @@ the release.
 
 Needs root, `gantry` on `PATH`, the engines under test, and three free
 addresses on a parent interface. Scenarios are arguments; with none it runs
-`docker podman dhcp`.
+`docker podman dhcp`. Further scenarios: `kiri`, `dhcpmove`, `ipv6`.
 
 ```sh
 sudo tests/integration/dhcp-lab.sh up
 sudo GT_PARENT=gtdhcp0 GT_SUBNET=10.99.0.0/24 GT_GATEWAY=10.99.0.1 \
      GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13 \
-     tests/integration/run.sh docker podman kiri dhcp
+     tests/integration/run.sh docker podman kiri dhcp dhcpmove ipv6
 ```
 
 The e2e scenario (`tests/integration/e2e/gantry.yaml`) runs once per
@@ -128,7 +128,8 @@ no firewall).
 | `up` succeeds | e2e | FR-CLI-01, FR-POD-01, FR-RT-01 |
 | Second `up` changes nothing | e2e | FR-CLI-02 |
 | Pod has its static address on `eth0` | e2e | FR-NET-01, FR-NET-03, FR-ADDR-02 |
-| Shared hostname (Docker, Podman) or hostname set (kiri) | e2e | FR-POD-03, FR-RT-06 |
+| Shared hostname | e2e | FR-POD-03, FR-RT-06 |
+| Shared UTS, IPC and network namespaces (same inode in two containers) | e2e | FR-POD-02, FR-POD-05, FR-RT-05, FR-RT-06 |
 | Loopback between services in a pod | e2e | FR-POD-05 |
 | Service name resolves to 127.0.0.1 | e2e | FR-DNS-02 |
 | Other pod reachable by service name | e2e | FR-DNS-03 |
@@ -149,6 +150,18 @@ no firewall).
 | DHCP server reachable | dhcp | FR-ADDR-03 |
 | Lease released on `down` | dhcp | FR-ADDR-04 |
 | Agent stopped after `down` | dhcp | FR-ADDR-04, NFR-SEC-04 |
+| First lease from the first pool | dhcpmove | FR-ADDR-03 |
+| New lease after the server's pool moves (NAK, then discover) | dhcpmove | FR-ADDR-04 |
+| Watcher pod's hosts file follows the new address | dhcpmove | FR-ADDR-05, FR-DNS-03 |
+| Watcher firewall allows the new address and drops the old | dhcpmove | FR-ADDR-05, FR-FW-05 |
+| Pod has its static IPv6 address | ipv6 | FR-ADDR-01, FR-ADDR-02 |
+| Hosts file lists both address families | ipv6 | FR-DNS-03 |
+| ping6 by pod name | ipv6 | FR-DNS-03 |
+| Firewall allows `pod:b` and blocks pod c over IPv6 | ipv6 | FR-FW-05 |
+
+`dhcpmove` restarts the lab's dnsmasq with a different pool
+(`dhcp-lab.sh move`) under a running pod and takes about a minute, because
+it waits for the client's T1 renewal.
 
 ### 4.3 ipvlan
 
@@ -184,6 +197,25 @@ These checks target the API-based engine layer and are added to `run.sh`:
 | Changing a service's runtime removes the old container | FR-RT-11 |
 | `setup podman` enables the socket and is idempotent | FR-RT-09 |
 | `setup docker` is idempotent and keeps other keys in `daemon.json` | FR-RT-09 |
+
+### 4.5 Verified by hand
+
+Run on the test host on 2026-11-15 against the API engine; candidates for
+automation in 4.4.
+
+| Check | Result |
+|---|---|
+| Podman scenario with `podman.socket` stopped (Gantry started it) | Passed |
+| `exec`: exit code passed through, piped stdin, TTY on Docker and Podman | Passed |
+| `logs --tail` across Docker and Podman services | Passed |
+| `build:` on Docker and Podman in one pod, with build args; `up` builds only missing images | Passed |
+| `build:` on kiri (classic builder), then `run` of the built image | Passed |
+| `run`: exit code, `--rm`, stdin, TTY, named one-off listed by `ps`, removed by `down` | Passed |
+| `kill`, `rm`, `top`, `ls`, `version` | Passed |
+| `setup docker` and `setup podman` on a host with the prototype's runtime entry removed | Passed |
+| Benchmark, 8 services in 2 pods: `up` 0.45 to 0.7 s, no-change `up` 80 ms, `ps` 45 ms, `down` 0.35 to 0.6 s | Recorded in the README |
+| MT-02 (`examples/mixed` on vlan4): Docker, Podman and kiri share one UTS and network namespace | Passed |
+| `examples/basic` on vlan4 with Docker and with Podman: gateway reachable, HTTPS egress, health-gated start | Passed (reaching the pods from another LAN machine not yet done) |
 
 ## 5. Manual tests
 
@@ -235,7 +267,7 @@ candidates for new tests.
 | FR-NET-07 | `errors_are_helpful` |
 | FR-ADDR-01, FR-ADDR-02 | `errors_are_helpful`, e2e address check |
 | FR-ADDR-03, FR-ADDR-04 | dhcp scenario, `ack_parsing` |
-| FR-ADDR-05 | MT-04 |
+| FR-ADDR-05 | dhcpmove (MT-04 automated) |
 | FR-ADDR-06 | `ack_parsing`, review |
 | FR-DNS-01 to FR-DNS-04 | unit files tests, e2e name checks, dhcp resolv.conf |
 | FR-FW-01 to FR-FW-07 | unit firewall tests, e2e firewall checks |
