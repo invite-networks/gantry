@@ -591,7 +591,13 @@ pub fn nft(netns: &Path, args: &[&str]) -> Result<()> {
 }
 
 pub fn nft_output(netns: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let bin = std::env::var("GANTRY_NFT").unwrap_or_else(|_| "nft".into());
+    // A binary override is for development only: a root process must not
+    // let its environment choose what it executes.
+    let bin = if cfg!(debug_assertions) {
+        std::env::var("GANTRY_NFT").unwrap_or_else(|_| "nft".into())
+    } else {
+        "nft".to_string()
+    };
     let mut cmd = Command::new(&bin);
     cmd.args(args);
     ns::command_in_netns(&mut cmd, netns)?;

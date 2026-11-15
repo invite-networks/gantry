@@ -11,7 +11,7 @@ pub use normalize::is_dns_name;
 use crate::errors::{Context, Error, Result};
 use crate::project::{Project, RuntimeKind};
 use indexmap::IndexMap;
-use serde_yaml_ng::{Mapping, Value};
+use serde_norway::{Mapping, Value};
 use std::path::{Path, PathBuf};
 
 /// File names tried, in order, when no `-f` is given.
@@ -86,7 +86,7 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
     let mut merged = Value::Mapping(Mapping::new());
     for file in &files {
         let text = std::fs::read_to_string(file).ctx(|| format!("read {}", file.display()))?;
-        let mut doc: Value = serde_yaml_ng::from_str(&text)
+        let mut doc: Value = serde_norway::from_str(&text)
             .map_err(|e| Error::config(format!("{}: {e}", file.display())))?;
         if doc.is_null() {
             continue;
@@ -98,7 +98,7 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
     }
 
     let raw: raw::File =
-        serde_yaml_ng::from_value(merged).map_err(|e| Error::config(e.to_string()))?;
+        serde_norway::from_value(merged).map_err(|e| Error::config(e.to_string()))?;
     let mut profiles = opts.profiles.clone();
     if profiles.is_empty() {
         if let Some(p) = lookup("COMPOSE_PROFILES") {
@@ -256,10 +256,10 @@ mod tests {
     #[test]
     fn merge_rules() {
         let mut a: Value =
-            serde_yaml_ng::from_str("services: {web: {image: a, ports: ['80'], command: [x]}}")
+            serde_norway::from_str("services: {web: {image: a, ports: ['80'], command: [x]}}")
                 .unwrap();
         let b: Value =
-            serde_yaml_ng::from_str("services: {web: {image: b, ports: ['443'], command: [y]}}")
+            serde_norway::from_str("services: {web: {image: b, ports: ['443'], command: [y]}}")
                 .unwrap();
         merge_into(&mut a, b, "");
         let web = &a["services"]["web"];

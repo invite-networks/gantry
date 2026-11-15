@@ -4,7 +4,7 @@
 
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde_yaml_ng::Value;
+use serde_norway::Value;
 
 /// Any scalar Compose accepts where a string is meant (`3`, `true`, `"x"`).
 #[derive(Debug, Clone, Deserialize)]

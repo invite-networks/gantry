@@ -4,10 +4,11 @@
 #
 #   sudo GT_PARENT=vlan4 GT_SUBNET=192.0.2.216/29 GT_GATEWAY=192.0.2.222 \
 #        GT_IP1=192.0.2.217 GT_IP2=192.0.2.218 GT_IP3=192.0.2.219 \
-#        tests/integration/run.sh [docker] [podman] [kiri] [dhcp]
+#        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove]
 #
 # With no arguments it runs docker, podman and dhcp. The dhcp scenario uses
 # an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq.
+# dhcpmove moves the lab's DHCP pool under a running pod (about a minute).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 pass=0
@@ -80,11 +81,45 @@ dhcp() {
 }
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }
+lease_addr() {
+  gantry -f "$here/dhcpmove/gantry.yaml" pod inspect client 2>/dev/null |
+    sed -n 's/.*"address": "\([0-9.]*\)".*/\1/p' | head -1
+}
+
+dhcpmove() {
+  echo "== dhcp address change"
+  "$here/dhcp-lab.sh" down >/dev/null
+  "$here/dhcp-lab.sh" up >/dev/null
+  K="gantry -f $here/dhcpmove/gantry.yaml"
+  $K down >/dev/null 2>&1
+  if ! $K up -d >/tmp/gt-dhcpmove-up.log 2>&1; then
+    bad "up"; tail -5 /tmp/gt-dhcpmove-up.log; return
+  fi
+  a=$(lease_addr)
+  check "first lease $a in the first pool" sh -c "echo $a | grep -q '^10.99.0.1[0-5][0-9]$'"
+  "$here/dhcp-lab.sh" move >/dev/null
+  b=$a
+  for _ in $(seq 1 40); do
+    b=$(lease_addr)
+    [ -n "$b" ] && [ "$b" != "$a" ] && break
+    sleep 3
+  done
+  check "new lease $b from the moved pool" sh -c "echo $b | grep -q '^10.99.0.16[0-9]$'"
+  sleep 2
+  check "watcher hosts file follows" grep -q "^$b[[:space:]]client" /run/gantry/dhcpmove/pods/watcher/hosts
+  check "watcher firewall allows the new address" sh -c "$K pod exec watcher nft list ruleset | grep -q '$b'"
+  check_not "watcher firewall dropped the old address" sh -c "$K pod exec watcher nft list ruleset | grep -q '$a'"
+  $K down >/dev/null 2>&1
+  "$here/dhcp-lab.sh" down >/dev/null
+  "$here/dhcp-lab.sh" up >/dev/null
+}
+
 targets=${*:-docker podman dhcp}
 for t in $targets; do
   case $t in
     docker|podman|kiri) e2e "$t" ;;
     dhcp) dhcp ;;
+    dhcpmove) dhcpmove ;;
     *) echo "unknown scenario $t" >&2; exit 2 ;;
   esac
 done

@@ -1,7 +1,7 @@
 //! Compose-style variable interpolation (`$VAR`, `${VAR:-default}` and friends).
 
 use crate::errors::{Error, Result};
-use serde_yaml_ng::Value;
+use serde_norway::Value;
 
 /// Looks up a variable. Returns `None` when it is unset.
 pub trait Lookup {

@@ -45,6 +45,12 @@ pub const DOCKER_RUNTIME: &str = "gantry";
 /// Per request timeout. Long because `stop` waits for the grace period.
 const REQUEST_TIMEOUT_SECS: u64 = 900;
 
+/// The Docker API version Podman's compat layer implements.
+const PODMAN_COMPAT_API: bollard::ClientVersion = bollard::ClientVersion {
+    major_version: 1,
+    minor_version: 41,
+};
+
 /// How long a private Podman API service stays up when idle.
 const PODMAN_SERVICE_IDLE_SECS: u32 = 300;
 
@@ -131,6 +137,13 @@ impl Engine {
     }
 
     async fn connect(&self) -> Result<Client> {
+        let t = std::time::Instant::now();
+        let r = self.connect_inner().await;
+        tracing::debug!("{} connect: {:?}", self.kind, t.elapsed());
+        r
+    }
+
+    async fn connect_inner(&self) -> Result<Client> {
         let mut socket = socket_path(&self.host);
         if !socket_alive(&socket).await {
             socket = match self.kind {
@@ -150,12 +163,23 @@ impl Engine {
             };
         }
         let path = socket.display().to_string();
-        let docker =
-            Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, bollard::API_DEFAULT_VERSION)
-                .map_err(|e| Error::engine(format!("{} {path}: {e}", self.kind)))?
-                .negotiate_version()
-                .await
-                .map_err(|e| Error::engine(format!("{} {path}: {e}", self.kind)))?;
+        let fail = |e: bollard::errors::Error| Error::engine(format!("{} {path}: {e}", self.kind));
+        let docker = match self.kind {
+            // Podman's /version gathers host information and takes about
+            // 160 ms; its compat API has implemented version 1.41 for years,
+            // so use that directly.
+            RuntimeKind::Podman => {
+                Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, &PODMAN_COMPAT_API)
+                    .map_err(fail)?
+            }
+            _ => {
+                Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, bollard::API_DEFAULT_VERSION)
+                    .map_err(fail)?
+                    .negotiate_version()
+                    .await
+                    .map_err(fail)?
+            }
+        };
         Ok(Client { docker, socket })
     }
 

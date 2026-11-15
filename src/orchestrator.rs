@@ -24,7 +24,11 @@ pub struct UpOptions {
 
 pub struct Orchestrator {
     pub project: Project,
+    /// The runtimes the project uses.
     engines: BTreeMap<RuntimeKind, Engine>,
+    /// Every runtime, sharing connections with `engines`, for finding
+    /// containers that moved between runtimes.
+    all: Vec<Engine>,
 }
 
 impl Orchestrator {
@@ -38,7 +42,15 @@ impl Orchestrator {
         engines
             .entry(project.runtime)
             .or_insert_with(|| Engine::new(project.runtime));
-        Self { project, engines }
+        let all = [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri]
+            .into_iter()
+            .map(|k| engines.get(&k).cloned().unwrap_or_else(|| Engine::new(k)))
+            .collect();
+        Self {
+            project,
+            engines,
+            all,
+        }
     }
 
     pub fn engine(&self, kind: RuntimeKind) -> &Engine {
@@ -51,21 +63,25 @@ impl Orchestrator {
     fn all_engines(&self) -> Vec<Engine> {
         // Also look at engines the project does not use (a service may have
         // moved runtimes since the last `up`).
-        let mut v: Vec<Engine> = self.engines.values().cloned().collect();
-        for k in [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri] {
-            if !self.engines.contains_key(&k) {
-                v.push(Engine::new(k));
-            }
-        }
-        v
+        self.all.clone()
     }
 
     /// Every container of this project, across all engines that answer.
+    /// Engines are queried in parallel.
     pub async fn containers(&self) -> Vec<(Engine, ContainerInfo)> {
+        let engines = self.all_engines();
+        let name = &self.project.name;
+        let results = futures_util::future::join_all(engines.iter().map(|e| async move {
+            let t = std::time::Instant::now();
+            let r = e.list(name).await;
+            tracing::debug!("{} list: {:?}", e.kind, t.elapsed());
+            r
+        }))
+        .await;
         let mut out = Vec::new();
-        for e in self.all_engines() {
+        for (e, r) in engines.into_iter().zip(results) {
             let used = self.engines.contains_key(&e.kind);
-            match e.list(&self.project.name).await {
+            match r {
                 Ok(list) => out.extend(list.into_iter().map(|c| (e.clone(), c))),
                 Err(err) if used => tracing::warn!("{err}"),
                 Err(_) => {}
@@ -187,13 +203,14 @@ impl Orchestrator {
 
         let timeout = opts.wait_timeout.unwrap_or(Duration::from_secs(300));
         let states = &states;
+        let existing = &existing;
         for level in self.levels(&order) {
             try_join_all(level.iter().map(|name| async move {
                 let svc = &self.project.services[name];
                 for (dep, cond) in &svc.depends_on {
                     self.wait_for(dep, *cond, timeout).await?;
                 }
-                self.ensure_container(svc, &states[&svc.pod], opts.force_recreate)
+                self.ensure_container(svc, &states[&svc.pod], opts.force_recreate, existing)
                     .await
             }))
             .await?;
@@ -318,22 +335,22 @@ impl Orchestrator {
         svc: &Service,
         st: &state::PodState,
         force: bool,
+        existing: &[(Engine, ContainerInfo)],
     ) -> Result<()> {
         let e = self.engine(svc.runtime);
         let body = create_spec(&self.project, svc, st);
         let want = hash_of(&body);
 
         // The same container name on another engine (runtime changed).
-        for other in self.all_engines().iter().filter(|o| o.kind != e.kind) {
-            if let Ok(Some(c)) = other.inspect(&svc.container_name).await {
-                if c.service == svc.name {
-                    println!(
-                        "Removing {} from {} (runtime is now {})",
-                        c.name, other.kind, e.kind
-                    );
-                    other.remove(&c.name).await?;
-                }
-            }
+        for (other, c) in existing
+            .iter()
+            .filter(|(o, c)| o.kind != e.kind && c.service == svc.name)
+        {
+            println!(
+                "Removing {} from {} (runtime is now {})",
+                c.name, other.kind, e.kind
+            );
+            other.remove(&c.name).await?;
         }
 
         if let Some(c) = e.inspect(&svc.container_name).await? {

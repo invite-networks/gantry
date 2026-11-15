@@ -1,0 +1,20 @@
+# A DHCP pod whose address changes while a static pod watches it: the
+# watcher's hosts file and its pod:client firewall rule must follow.
+name: dhcpmove
+runtime: ${GANTRY_RUNTIME:-docker}
+networks:
+  lab:
+    driver: macvlan
+    parent: gtdhcp0
+    ipam: { config: [ { subnet: 10.99.0.0/24, gateway: 10.99.0.1 } ] }
+pods:
+  client:
+    networks: { lab: { dhcp: true } }
+  watcher:
+    networks: { lab: { ipv4_address: 10.99.0.13 } }
+    firewall:
+      input:
+        - { proto: tcp, port: 9000, from: [pod:client] }
+services:
+  c: { image: alpine:3, pod: client, command: ["sleep", "infinity"] }
+  w: { image: alpine:3, pod: watcher, command: ["sleep", "infinity"] }

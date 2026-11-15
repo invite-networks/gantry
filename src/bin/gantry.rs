@@ -136,6 +136,8 @@ enum Cmd {
     /// One time host setup for a runtime
     #[command(subcommand)]
     Setup(SetupCmd),
+    /// Print a shell completion script (bash, zsh, fish, elvish, powershell)
+    Completion { shell: clap_complete::Shell },
     #[command(subcommand, hide = true)]
     Internal(InternalCmd),
 }
@@ -206,6 +208,8 @@ enum SetupCmd {
 
 #[derive(Subcommand)]
 enum InternalCmd {
+    /// Print the man page
+    Man,
     /// DHCP agent for one pod interface
     DhcpAgent {
         #[arg(long)]
@@ -326,6 +330,18 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             pod::dhcp::run_agent(cfg).await?;
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Completion { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(shell, &mut Cli::command(), "gantry", &mut std::io::stdout());
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Internal(InternalCmd::Man) => {
+            use clap::CommandFactory;
+            clap_mangen::Man::new(Cli::command())
+                .render(&mut std::io::stdout())
+                .ctx(|| "render man page".into())?;
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Config {
             services,
             pods,
@@ -345,8 +361,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 print!(
                     "{}",
-                    serde_yaml_ng::to_string(&o.project)
-                        .map_err(|e| Error::State(e.to_string()))?
+                    serde_norway::to_string(&o.project).map_err(|e| Error::State(e.to_string()))?
                 );
             }
             Ok(ExitCode::SUCCESS)
