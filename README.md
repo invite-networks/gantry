@@ -1,9 +1,34 @@
 # Gantry
 
-Gantry is a pod-first container orchestrator. It reads the Compose format,
-creates each pod's namespaces itself, puts the pod straight onto your LAN
-with macvlan or ipvlan, applies an nftables firewall inside the pod, and
-then starts the pod's containers with Docker, Podman or kiri.
+Gantry is a replacement for Docker Compose that adds pods, and runs those
+pods on whichever container runtime you choose: Docker, Podman or kiri. You
+keep writing Compose files. Gantry groups services into pods, puts each pod
+straight onto your LAN with macvlan or ipvlan, applies an nftables firewall
+inside the pod, and starts the pod's containers with the runtime each
+service asks for.
+
+## Why Gantry exists
+
+Compose is the format most people already know, but it has no idea of a
+pod. Every service gets its own network namespace, and putting a group of
+containers on the LAN with one address, one hostname and one firewall means
+fighting the bridge network. Kubernetes and Podman have pods, but
+Kubernetes is far more than a single host needs, and Podman pods only work
+with Podman.
+
+Gantry fills that gap:
+
+* **Pods in plain Compose.** Services that belong together share one
+  network, UTS and IPC namespace and talk over `127.0.0.1`, as in a
+  Kubernetes pod.
+* **Any runtime, even inside one pod.** Docker, Podman and kiri containers
+  can sit side by side in the same pod. Pick the runtime per project or per
+  service, and switch without rewriting the file.
+* **First-class LAN networking.** Each pod gets its own address on a real
+  network (static or DHCP, IPv4 and IPv6) and its own firewall, so it
+  behaves like a small host rather than a set of published ports.
+* **One small binary.** No daemon of its own, no cluster, and systemd
+  brings projects back at boot.
 
 There is no infra or pause container. Gantry pins the namespaces the same
 way `ip netns add` does, and every container joins them by path.
