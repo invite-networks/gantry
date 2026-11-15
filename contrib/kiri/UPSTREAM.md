@@ -224,17 +224,15 @@ at start instead of blocking the agent. `main` refuses all three with
 
 ```text
                          main                         this change
-Mac (Apple silicon)      551 passed, 2 failed         552 passed, 1 failed
+Mac (Apple silicon)      553 passed, 0 failed         553 passed, 0 failed
 GitHub runner (Linux)    446 passed, 41 failed, 11 skipped (both, same checks)
 Linux host               454 passed, 44 failed (both, same checks)
 ```
 
-No check fails with the change that passes on `main`. On the Mac,
-`dns-user-net-forwards` fails on both because the network there only allows
-DNS to approved resolvers, and `logs` failed once on `main` (it read nginx's
-output before nginx printed it). On Linux the failing checks are the
-Mac-only ones (Finder folders, Rosetta, `kiri machine`), TTY checks without
-a terminal, and the machines' own networking.
+Every check passes on the Mac with and without the change. On Linux the
+same checks fail on both sides: the Mac-only ones (Finder folders, Rosetta,
+`kiri machine`), TTY checks without a terminal, and the machines' own
+networking. No check fails with the change that passes on `main`.
 
 **Speed check** (`scripts/perf-run.sh`, 400 runs each, on GitHub):
 within the limits.
