@@ -56,11 +56,26 @@ Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 Gantry needs Linux, root, `nft` (nftables) for pod firewalls, and at least
 one engine.
 
-From a Debian package (built with `scripts/package.sh`):
+From the INVITE Networks apt repository (Debian 12+, Ubuntu 22.04+, amd64
+and arm64):
 
 ```sh
-sudo apt install ./gantry_0.1.0-1_amd64.deb
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://invite-networks.github.io/apt/invite-networks.asc |
+  sudo tee /etc/apt/keyrings/invite-networks.asc >/dev/null
+sudo tee /etc/apt/sources.list.d/invite-networks.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://invite-networks.github.io/apt
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/invite-networks.asc
+EOF
+sudo apt update && sudo apt install gantry
 ```
+
+Each [release](https://github.com/invite-networks/gantry/releases) also
+carries the `.deb` files with build provenance, which
+`gh attestation verify <file>.deb --repo invite-networks/gantry` checks.
 
 From source:
 
