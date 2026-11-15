@@ -146,8 +146,8 @@ kiri speaks the Docker Engine API, so kirisame drives it with
 `KIRISAME_KIRI_HOST`). Upstream kiri 0.2.0 only joins another container's
 namespace (`container:<name>`). The patch in `contrib/kiri` adds Podman's
 `ns:<path>` network mode. kiri containers share the pod's network
-namespace; they keep their own UTS and IPC namespaces, and kirisame sets
-the pod hostname on them.
+namespace and its `/etc/hosts` and `/etc/resolv.conf`. They keep their own
+UTS and IPC namespaces, so kirisame sets the pod hostname on them.
 
 ## Running at boot
 
