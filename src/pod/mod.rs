@@ -118,6 +118,17 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    // Docker, Podman and kiri give each container's own network namespace
+    // these defaults (non-root can bind low ports and ping). Pods replace
+    // that namespace, so they get the same defaults unless the pod sets them.
+    for (k, v) in [
+        ("net.ipv4.ip_unprivileged_port_start", "0"),
+        ("net.ipv4.ping_group_range", "0 2147483647"),
+    ] {
+        if !pod.sysctls.contains_key(k) {
+            sysctls.insert(0, (k.to_string(), v.to_string()));
+        }
+    }
     if !pod.ipv6 {
         sysctls.push(("net.ipv6.conf.all.disable_ipv6".into(), "1".into()));
         sysctls.push(("net.ipv6.conf.default.disable_ipv6".into(), "1".into()));

@@ -1,6 +1,6 @@
-# One pod, three engines' worth of containers sharing a namespace.
-# nginx runs under Docker, the checker under Podman; both talk over
-# loopback because they live in the same pod.
+# One pod, three engines sharing a namespace. nginx runs under Docker,
+# the checker under Podman and the reporter under kiri (patched, see
+# contrib/kiri). They talk over loopback because they live in one pod.
 name: mixed
 
 networks:
@@ -34,3 +34,9 @@ services:
     runtime: podman
     depends_on: [web]
     command: ["sh", "-c", "while true; do wget -qO- http://localhost/ | grep -o 'Welcome to nginx' ; sleep 15; done"]
+  reporter:
+    image: alpine:3
+    pod: app
+    runtime: kiri
+    depends_on: [web]
+    command: ["sh", "-c", "while true; do wget -qO- http://web/ >/dev/null && echo kiri sees nginx on loopback; sleep 15; done"]
