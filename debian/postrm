@@ -1,0 +1,21 @@
+#!/bin/sh
+# On purge, removes the remote control account and its key file. The
+# sshd and sudoers drop-ins are conffiles and dpkg removes them.
+set -e
+
+if [ "$1" = purge ]; then
+	rm -f /etc/gantry/remote/authorized_keys
+	rmdir /etc/gantry/remote 2>/dev/null || true
+	rmdir /etc/gantry 2>/dev/null || true
+	if getent passwd gantry >/dev/null; then
+		userdel gantry || true
+	fi
+	if getent group gantry >/dev/null; then
+		groupdel gantry 2>/dev/null || true
+	fi
+	rmdir /var/lib/gantry 2>/dev/null || true
+	if [ -d /run/systemd/system ] && command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then
+		systemctl reload ssh.service 2>/dev/null ||
+			systemctl reload sshd.service 2>/dev/null || true
+	fi
+fi

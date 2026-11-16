@@ -1,0 +1,39 @@
+#!/bin/sh
+# Sets up the gantry account for remote control over SSH (see
+# docs/runbooks/remote.md). The account cannot log in until a key is added
+# to /etc/gantry/remote/authorized_keys.
+set -e
+
+if [ "$1" = configure ]; then
+	if ! getent passwd gantry >/dev/null; then
+		useradd --system --user-group --home-dir /var/lib/gantry \
+			--shell /bin/sh --comment "Gantry remote control" gantry
+		# No password, but not locked: sshd without PAM refuses locked
+		# accounts even for key logins.
+		usermod -p '*' gantry
+	fi
+	install -d -o root -g root -m 0755 /var/lib/gantry /etc/gantry /etc/gantry/remote
+	if [ ! -e /etc/gantry/remote/authorized_keys ]; then
+		install -o root -g root -m 0644 /dev/null /etc/gantry/remote/authorized_keys
+	fi
+
+	if command -v visudo >/dev/null 2>&1 &&
+		! visudo -cqf /etc/sudoers.d/gantry; then
+		echo "gantry: /etc/sudoers.d/gantry did not validate; remote control will not work" >&2
+	fi
+	if ! command -v sudo >/dev/null 2>&1; then
+		echo "gantry: sudo is not installed; remote control over SSH needs it" >&2
+	fi
+
+	# Pick up /etc/ssh/sshd_config.d/gantry.conf.
+	if command -v sshd >/dev/null 2>&1; then
+		if sshd -t 2>/dev/null; then
+			if [ -d /run/systemd/system ]; then
+				systemctl reload ssh.service 2>/dev/null ||
+					systemctl reload sshd.service 2>/dev/null || true
+			fi
+		else
+			echo "gantry: sshd -t failed; not reloading ssh. Check /etc/ssh/sshd_config.d/gantry.conf" >&2
+		fi
+	fi
+fi

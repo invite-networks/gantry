@@ -1,0 +1,174 @@
+#!/bin/sh
+# gantry-run: runs one allowed Gantry command for a project under
+# /etc/gantry, as root. The gantry account reaches it through sudo, from
+# gantry-ssh. Only projects in root-owned directories and a fixed set of
+# commands and flags are accepted, so the account can operate projects but
+# cannot change what they run.
+#
+#   gantry-run ls | version
+#   gantry-run <project> up [--wait] [--wait-timeout N] [--force-recreate]
+#                           [--build] [--pull always|missing|never] [svc...]
+#   gantry-run <project> down [-t N]
+#   gantry-run <project> ps | config [--services|--pods|--json]
+#   gantry-run <project> logs [-f] [-t] [--tail N|all] [svc...]
+#   gantry-run <project> start|pull|build|top [svc...]
+#   gantry-run <project> stop|restart [-t N] [svc...]
+#   gantry-run <project> pod ls | pod inspect <pod> | firewall show <pod>
+#
+# `up` always runs detached. `down -v`, exec, run, kill, rm, pod exec and
+# firewall reload are not available remotely.
+set -eu
+umask 077
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+GANTRY=/usr/bin/gantry
+ETC=/etc/gantry
+
+die() {
+	echo "gantry-run: $*" >&2
+	exit 64
+}
+
+usage() {
+	sed -n '/^#   gantry-run ls/,/^# firewall reload/s/^# \{0,1\}//p' "$0" >&2
+	exit 64
+}
+
+# A project, pod or service name: letters, digits, '.', '_', '-', and not
+# starting with '-' or '.'.
+name_ok() {
+	case $1 in
+	'' | -* | .* | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	[ ${#1} -le 128 ]
+}
+
+int_ok() {
+	case $1 in
+	'' | *[!0-9]*) return 1 ;;
+	esac
+	[ ${#1} -le 6 ]
+}
+
+# The project directory and the files Gantry reads from it must be root
+# owned and writable only by root, or the caller could change what runs.
+check_tree() {
+	for d in "$ETC" "$1"; do
+		[ -d "$d" ] && [ ! -L "$d" ] || die "no such project"
+	done
+	bad=$(find "$ETC" "$1" -maxdepth 0 \( ! -user root -o -perm /022 \) -print -quit)
+	[ -z "$bad" ] || die "$bad is not owned by root or is writable by a group or others"
+	bad=$(find "$1" -mindepth 1 -maxdepth 1 -type f \( ! -user root -o -perm /022 \) -print -quit)
+	[ -z "$bad" ] || die "$bad is not owned by root or is writable by a group or others"
+	bad=$(find "$1" -xdev -user "${SUDO_UID:-0}" ! -user root -print -quit)
+	[ -z "$bad" ] || die "$bad is owned by the calling account"
+	bad=$(find "$1" -xdev ! -type l -perm -002 ! -perm -1000 -print -quit)
+	[ -z "$bad" ] || die "$bad is writable by others"
+}
+
+[ $# -ge 1 ] || usage
+case $1 in
+ls | version)
+	[ $# -eq 1 ] || usage
+	exec "$GANTRY" "$1"
+	;;
+-h | --help | help) usage ;;
+esac
+
+project=$1
+name_ok "$project" || die "invalid project name"
+dir=$ETC/$project
+check_tree "$dir"
+[ $# -ge 2 ] || usage
+cmd=$2
+shift 2
+
+# Each command's flags. A flag that takes a value names its check after a
+# colon; everything else must be a service, pod or nothing.
+case $cmd in
+up) flags='--wait --wait-timeout:int --force-recreate --build --pull:pull' rest=services ;;
+down) flags='-t:int --timeout:int' rest=none ;;
+ps) flags='' rest=none ;;
+config) flags='--services --pods --json' rest=none ;;
+logs) flags='-f --follow -t --timestamps --tail:tail' rest=services ;;
+start | pull | build | top) flags='' rest=services ;;
+stop | restart) flags='-t:int --timeout:int' rest=services ;;
+pod)
+	case ${1:-} in
+	ls | list) [ $# -eq 1 ] || usage ;;
+	inspect) [ $# -eq 2 ] && name_ok "$2" || usage ;;
+	*) usage ;;
+	esac
+	flags='' rest=checked
+	;;
+firewall | fw)
+	[ $# -eq 2 ] && [ "$1" = show ] && name_ok "$2" || usage
+	flags='' rest=checked
+	;;
+*) die "command $cmd is not available remotely" ;;
+esac
+
+value_ok() {
+	case $1 in
+	int) int_ok "$2" ;;
+	tail) [ "$2" = all ] || int_ok "$2" ;;
+	pull) case $2 in always | missing | never) ;; *) return 1 ;; esac ;;
+	*) return 1 ;;
+	esac
+}
+
+# Rebuild the argument list from checked words only.
+n=$#
+want=''
+i=0
+while [ "$i" -lt "$n" ]; do
+	a=$1
+	shift
+	i=$((i + 1))
+	if [ -n "$want" ]; then
+		value_ok "$want" "$a" || die "invalid value for $flag"
+		set -- "$@" "$a"
+		want=''
+		continue
+	fi
+	case $rest in
+	checked)
+		set -- "$@" "$a"
+		continue
+		;;
+	esac
+	case $a in
+	-*=*) flag=${a%%=*} val=${a#*=} ;;
+	-*) flag=$a val='' ;;
+	*)
+		[ "$rest" = services ] && name_ok "$a" || die "unexpected argument $a"
+		set -- "$@" "$a"
+		continue
+		;;
+	esac
+	match=''
+	for f in $flags; do
+		[ "${f%%:*}" = "$flag" ] && match=$f
+	done
+	[ -n "$match" ] || die "flag $flag is not available remotely"
+	case $match in
+	*:*)
+		kind=${match#*:}
+		if [ -n "$val" ]; then
+			value_ok "$kind" "$val" || die "invalid value for $flag"
+		else
+			want=$kind
+		fi
+		;;
+	*) [ -z "$val" ] || die "flag $flag takes no value" ;;
+	esac
+	set -- "$@" "$a"
+done
+[ -z "$want" ] || die "$flag needs a value"
+
+[ "$cmd" = up ] && set -- -d "$@"
+
+logger -p auth.info -t gantry-run -- "user=${SUDO_USER:-root} project=$project: $cmd $*" 2>/dev/null || true
+cd "$dir"
+exec "$GANTRY" "$cmd" "$@"

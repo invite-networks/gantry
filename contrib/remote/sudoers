@@ -1,0 +1,6 @@
+# Installed by the gantry package as /etc/sudoers.d/gantry.
+# The gantry account may run gantry-run as root, and nothing else.
+# gantry-run accepts only projects in root-owned /etc/gantry/<name>
+# directories and a fixed set of commands.
+Defaults:gantry env_reset, !requiretty
+gantry ALL=(root) NOPASSWD: /usr/libexec/gantry/gantry-run

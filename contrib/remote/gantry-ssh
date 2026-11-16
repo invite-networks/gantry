@@ -1,0 +1,30 @@
+#!/bin/sh
+# gantry-ssh: the forced command for the gantry account (see
+# /etc/ssh/sshd_config.d/gantry.conf). It splits the requested command into
+# words, without a shell, and hands them to gantry-run through sudo.
+#
+#   ssh gantry@host <project> up --wait
+#   ssh gantry@host gantry <project> logs --tail 50 web
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+cmd=${SSH_ORIGINAL_COMMAND:-}
+if [ -z "$cmd" ]; then
+	echo "usage: ssh gantry@host <project> <command> [args]   (or: ls, version, help)" >&2
+	exit 64
+fi
+case $cmd in
+*[!A-Za-z0-9\ ._=-]*)
+	echo "gantry-ssh: only letters, digits, spaces and . _ = - are accepted" >&2
+	exit 64
+	;;
+esac
+
+set -f
+# shellcheck disable=SC2086 # word splitting is the point; globbing is off
+set -- $cmd
+[ "${1:-}" = gantry ] && shift
+
+logger -p auth.info -t gantry-ssh -- "from=${SSH_CLIENT%% *}: $*" 2>/dev/null || true
+exec sudo -n /usr/libexec/gantry/gantry-run "$@"

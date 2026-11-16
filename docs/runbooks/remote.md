@@ -1,0 +1,154 @@
+# Remote control over SSH
+
+| Field | Value |
+|---|---|
+| Owner | Host operator (root) |
+| Applies to | Gantry 0.1.x installed from the .deb |
+| Validation | Package install, the restricted account, every refusal and purge tested in a Debian 13 container (`tests/packaging/remote.sh`, 40 checks); sshd scoping also checked on Debian 12 and Ubuntu 22.04. Not yet run against a live engine on the reference host. |
+
+Gantry has to run on the host that runs the containers, as root. To drive
+it from another machine, the package sets up a `gantry` account that can log
+in with SSH keys and do one thing: operate projects that root has put in
+`/etc/gantry/<name>/`. It cannot change those projects, get a shell, forward
+ports or run anything else.
+
+```
+your machine                    host
+ssh gantry@host demo up   -->   sshd (Match User gantry)
+                                  ForceCommand gantry-ssh
+                                    sudo gantry-run demo up
+                                      cd /etc/gantry/demo && gantry up -d
+```
+
+## 1. What the package installs
+
+| Path | Purpose |
+|---|---|
+| account `gantry` | System account, home `/var/lib/gantry` (root owned), no password. Created on install, removed on purge. |
+| `/etc/ssh/sshd_config.d/gantry.conf` | For the `gantry` account only: keys come from `/etc/gantry/remote/authorized_keys`, key login only, the forced command, no TTY, no forwarding. |
+| `/etc/gantry/remote/authorized_keys` | Root owned and empty at install, so nobody can log in until you add a key. |
+| `/etc/sudoers.d/gantry` | `gantry` may run `/usr/libexec/gantry/gantry-run` as root, and nothing else. |
+| `/usr/libexec/gantry/gantry-ssh` | The forced command. Splits the request into words without a shell and calls `gantry-run` through sudo. |
+| `/usr/libexec/gantry/gantry-run` | Checks the project and the command, then runs Gantry as root in the project directory. |
+
+Sources: `contrib/remote/`. The package recommends `sudo` and
+`openssh-server`. Without them the account exists but cannot be used.
+
+## 2. Enable it on a host
+
+Trigger: a host should be operated remotely.
+
+1. Put the project in place as root, in the same layout `gantry@.service`
+   uses:
+
+   ```sh
+   sudo install -d -m 0755 /etc/gantry/myproject
+   sudo install -m 0644 gantry.yaml /etc/gantry/myproject/
+   ```
+
+2. Add one key per caller (a person, CI, an automation host), with a
+   comment that says who it is and, ideally, where it may connect from:
+
+   ```sh
+   echo 'from="10.0.0.0/24" ssh-ed25519 AAAA... ci@invite' |
+     sudo tee -a /etc/gantry/remote/authorized_keys
+   ```
+
+   The file is read on every login, so no reload is needed.
+
+3. If sshd restricts logins with `AllowUsers` or `AllowGroups`, add
+   `gantry` there and reload ssh.
+
+Validate from the caller:
+
+```sh
+ssh gantry@host version
+ssh gantry@host myproject config --services
+```
+
+## 3. Use it
+
+```sh
+ssh gantry@host ls                               # projects with pods on the host
+ssh gantry@host myproject up --wait              # always detached
+ssh gantry@host myproject ps
+ssh gantry@host myproject logs --tail 100 web
+ssh gantry@host myproject logs -f web            # Ctrl-C to stop following
+ssh gantry@host myproject restart web
+ssh gantry@host myproject pull
+ssh gantry@host myproject down
+ssh gantry@host myproject pod ls
+ssh gantry@host myproject firewall show web
+ssh gantry@host gantry myproject ps              # a leading "gantry" is ignored
+```
+
+| Command | Allowed flags and arguments |
+|---|---|
+| `ls`, `version` | none (no project) |
+| `up` | `--wait`, `--wait-timeout N`, `--force-recreate`, `--build`, `--pull always\|missing\|never`, services. Runs with `-d` always. |
+| `down` | `-t N` |
+| `ps` | none |
+| `config` | `--services`, `--pods`, `--json` |
+| `logs` | `-f`, `-t`, `--tail N\|all`, services |
+| `start`, `pull`, `build`, `top` | services |
+| `stop`, `restart` | `-t N`, services |
+| `pod ls`, `pod inspect POD`, `firewall show POD` | as shown |
+
+Not available remotely, because each one either destroys data or runs
+arbitrary commands as root: `down -v`, `exec`, `run`, `kill`, `rm`,
+`pod exec`, `firewall reload`, `setup`, and the `-f`, `-p`,
+`--project-directory`, `--env-file`, `--profile` and `--runtime` flags. Use
+an admin login for those.
+
+Requests may only contain letters, digits, spaces and `. _ = -`. Anything
+else is refused before a shell or sudo is involved.
+
+## 4. What is checked before every command
+
+`gantry-run` refuses to run when:
+
+* the project name is not a plain name, or `/etc/gantry/<name>` does not
+  exist or is a symlink;
+* `/etc/gantry` or the project directory is not owned by root, or is
+  writable by a group or others;
+* a file directly in the project directory (the Compose file, `.env`) is
+  not owned by root or is writable by a group or others;
+* anything under the project directory is owned by the `gantry` account, or
+  is writable by others.
+
+Data directories owned by container users (for example `./data` owned by
+uid 999 for a database) are fine. A project the `gantry` account could
+change is not.
+
+## 5. Security notes
+
+* **Treat the keys as operator credentials.** They cannot change what runs,
+  but they can stop and start every project on the host and read its logs.
+* **Changing a project is a separate, privileged step.** Copy project files
+  in through your provisioning path, as root. Never give the `gantry`
+  account write access to `/etc/gantry`.
+* **Do not add `gantry` to the `docker` group** or give it other sudo
+  rules. Either one is a root path around `gantry-run`.
+* **Audit.** sshd logs which key logged in (its fingerprint). `gantry-ssh`
+  logs the source address and request, and `gantry-run` and sudo log the
+  command run, all to the auth log (`journalctl -t gantry-run -t gantry-ssh -t sudo`).
+
+## 6. Revoke access or disable it
+
+* One caller: delete their line from `/etc/gantry/remote/authorized_keys`.
+* Every caller on a host: empty the file (`sudo truncate -s 0 /etc/gantry/remote/authorized_keys`).
+  The account stays but cannot log in.
+* Remove everything: `sudo apt purge gantry` removes the account, the key
+  file and both drop-ins. `apt remove` keeps the drop-ins and the keys, as
+  it does for any configuration.
+
+## 7. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Permission denied (publickey)` | Key not in `/etc/gantry/remote/authorized_keys`, a `from=` that does not match, or `AllowUsers`/`AllowGroups` excludes `gantry`. Check `journalctl -u ssh`. |
+| `sudo: a password is required` | `/etc/sudoers.d/gantry` is missing or does not validate: `sudo visudo -cf /etc/sudoers.d/gantry`. |
+| `gantry-run: no such project` | No directory `/etc/gantry/<name>`, or it is a symlink. |
+| `... is not owned by root or is writable by a group or others` | Fix the path named: `sudo chown root:root <path>` and `sudo chmod go-w <path>`. Do not `chown -R` the project, which would break container data directories. |
+| `... is not available remotely` | By design; see section 3. |
+| `PTY allocation request failed` | Harmless. The account never gets a TTY; the command still runs. |

@@ -237,6 +237,20 @@ boot and `gantry down` at shutdown:
 sudo systemctl enable --now gantry@myproject
 ```
 
+## Remote control
+
+Gantry runs on the host it manages. To drive it from elsewhere, the package
+sets up a `gantry` account that can only operate projects in
+`/etc/gantry/<name>/` over SSH, once you add a key to
+`/etc/gantry/remote/authorized_keys`:
+
+```sh
+ssh gantry@host myproject up --wait
+ssh gantry@host myproject logs --tail 100 web
+```
+
+See [docs/runbooks/remote.md](docs/runbooks/remote.md).
+
 ## Things to know
 
 * **The host cannot reach its own macvlan pods** through the parent

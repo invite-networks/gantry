@@ -55,7 +55,8 @@ maintainer = "INVITE Networks"
 section = "admin"
 priority = "optional"
 depends = "$auto, nftables"
-recommends = "docker-ce | docker.io | podman"
+recommends = "docker-ce | docker.io | podman, sudo, openssh-server"
+maintainer-scripts = "debian/"
 extended-description = """\
 Gantry runs Compose projects as pods. It creates each pod's namespaces \
 itself, puts the pod on the LAN with macvlan or ipvlan, applies an \
@@ -65,6 +66,10 @@ assets = [
     ["target/release/gantry", "usr/bin/", "755"],
     ["target/release/gantry-oci", "usr/bin/", "755"],
     ["contrib/systemd/gantry@.service", "lib/systemd/system/", "644"],
+    ["contrib/remote/gantry-run", "usr/libexec/gantry/", "755"],
+    ["contrib/remote/gantry-ssh", "usr/libexec/gantry/", "755"],
+    ["contrib/remote/sudoers", "etc/sudoers.d/gantry", "440"],
+    ["contrib/remote/sshd.conf", "etc/ssh/sshd_config.d/gantry.conf", "644"],
     ["target/package/gantry.1", "usr/share/man/man1/", "644"],
     ["target/package/gantry.bash", "usr/share/bash-completion/completions/gantry", "644"],
     ["target/package/_gantry", "usr/share/zsh/vendor-completions/", "644"],

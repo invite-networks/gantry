@@ -34,6 +34,9 @@ gantry --version
 
 Expected: both binaries in `/usr/local/bin`, version printed.
 
+The .deb also sets up the restricted `gantry` account for remote control
+over SSH. It cannot log in until a key is added; see [remote](remote.md).
+
 ## 3. Set up Docker
 
 Trigger: the host runs Docker services.
