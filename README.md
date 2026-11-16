@@ -56,8 +56,8 @@ Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 Gantry needs Linux, root, `nft` (nftables) for pod firewalls, and at least
 one engine.
 
-From the INVITE Networks apt repository (Debian 12+, Ubuntu 22.04+, amd64
-and arm64):
+From the INVITE Networks apt repository (Debian 12+, Ubuntu 22.04+,
+amd64):
 
 ```sh
 sudo install -d -m 0755 /etc/apt/keyrings

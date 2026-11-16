@@ -19,7 +19,8 @@ jobs:
           # Ubuntu 22.04 keeps the glibc requirement low enough for
           # Debian 12 and Ubuntu 22.04 hosts.
           - { arch: amd64, runner: ubuntu-22.04 }
-          - { arch: arm64, runner: ubuntu-22.04-arm }
+          # arm64 is off until it is needed; re-enable with this line:
+          # - { arch: arm64, runner: ubuntu-22.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
