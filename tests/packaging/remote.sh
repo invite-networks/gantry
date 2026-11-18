@@ -77,6 +77,12 @@ chmod 777 /mnt/store/demo2; out=$($S demo2 config 2>&1) && bad "world writable p
 mkdir -p /mnt/other/demo2; out=$($S demo2 config 2>&1) && bad "duplicate name allowed" || ok "duplicate name: $out"; rmdir /mnt/other/demo2
 chmod 664 /etc/gantry/project-dirs; out=$($S demo2 config 2>&1) && bad "writable project-dirs allowed" || ok "writable project-dirs: $out"; chmod 644 /etc/gantry/project-dirs
 
+# Local project storage is created on install, root owned and not writable
+# by others, and left alone when it already exists.
+[ "$(stat -c '%U:%G %a' /mnt/container-local)" = "root:root 755" ] && ok "container-local created" || bad "container-local: $(stat -c '%U:%G %a' /mnt/container-local 2>&1)"
+chmod 750 /mnt/container-local; dpkg-reconfigure gantry >/dev/null 2>&1
+[ "$(stat -c '%a' /mnt/container-local)" = 750 ] && ok "existing container-local untouched" || bad "container-local changed"; chmod 755 /mnt/container-local
+
 # Direct sudo for anything else must fail.
 su -s /bin/sh gantry -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"
 su -s /bin/sh gantry -c 'sudo -n id' >/dev/null 2>&1 && bad "sudo id" || ok "no sudo id"
@@ -86,5 +92,6 @@ echo "--- logs"; grep -h "gantry-run\|gantry-ssh" /var/log/auth.log 2>/dev/null 
 echo "--- purge"
 apt-get purge -y -qq gantry >/dev/null 2>&1
 getent passwd gantry && bad "user left after purge" || ok "user removed"
+[ -d /mnt/container-local ] && ok "container-local kept after purge" || bad "container-local removed by purge"
 ls /etc/sudoers.d/gantry /etc/ssh/sshd_config.d/gantry.conf /etc/gantry/remote 2>&1 | grep -c "No such" | grep -q 3 && ok "files removed" || bad "files left: $(ls /etc/gantry /etc/sudoers.d /etc/ssh/sshd_config.d)"
 echo "RESULT $pass passed, $fail failed"

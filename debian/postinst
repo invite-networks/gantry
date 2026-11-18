@@ -13,6 +13,12 @@ if [ "$1" = configure ]; then
 		usermod -p '*' gantry
 	fi
 	install -d -o root -g root -m 0755 /var/lib/gantry /etc/gantry /etc/gantry/remote
+	# Local project storage, found through /mnt/* in project-dirs. Created
+	# only when missing: an existing directory or mountpoint is left as it
+	# is, and purge never removes it, since it holds data.
+	if [ ! -e /mnt/container-local ]; then
+		install -d -o root -g root -m 0755 /mnt/container-local
+	fi
 	if [ ! -e /etc/gantry/remote/authorized_keys ]; then
 		install -o root -g root -m 0644 /dev/null /etc/gantry/remote/authorized_keys
 	fi

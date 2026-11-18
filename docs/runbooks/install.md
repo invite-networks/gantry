@@ -50,7 +50,10 @@ sudo apt install gantry
 Validate: `gantry --version` prints the version.
 
 The package installs `gantry` and `gantry-oci` in `/usr/bin`, the
-`gantry@.service` unit, the man page and shell completions. It also sets up
+`gantry@.service` unit, `/etc/gantry/project-dirs`, the man page and shell
+completions. It creates `/mnt/container-local` (root owned, mode 0755) for
+local project storage when it does not exist; an existing directory or
+mountpoint is left as it is, and purging the package never removes it. It also sets up
 the restricted `gantry` account for remote control over SSH, which cannot
 log in until a key is added; see [remote](remote.md).
 
