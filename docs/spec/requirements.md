@@ -51,7 +51,7 @@ met is in the [design](design.md).
 | Service consumer | A machine on the LAN that reaches a pod at its LAN address. |
 | Container engine | Docker (`dockerd`), Podman (its Docker-compatible API service) or kiri. Creates and runs containers on request. |
 | LAN infrastructure | The switch, router and DHCP server on the segment the pods join. |
-| Init system | systemd, which starts projects at boot through `gantry@.service`. |
+| Init system | systemd, which starts registered projects at boot through `gantry-boot.service`. |
 
 ## 4. Definitions
 
@@ -193,7 +193,9 @@ Priority: **M** must, **S** should, **C** could.
 |---|---|---|
 | FR-ST-01 | Runtime state shall live under `/run/gantry` and `/run/netns` and in container labels, and nowhere else. | M |
 | FR-ST-02 | After a reboot, `up` shall recreate pods and replace containers that belonged to the previous pod instances. | M |
-| FR-ST-03 | A systemd template unit shall bring an installed project up at boot (after network and remote file systems) and down at shutdown. `--installed NAME` shall find the project directory `NAME` in exactly one of the parent directories listed in `/etc/gantry/project-dirs` (default `/etc/gantry`, packaged with `/etc/gantry` and `/mnt/*`), never following symlinks. | S |
+| FR-ST-03 | `gantry-boot.service` shall start every registered project at boot, after network and remote file systems, and stop them at shutdown. `gantry up -d` shall register an installed project and `gantry down` remove it; `stop`, `up` without `-d` and projects outside the project directories shall not change registration. `--installed NAME` shall find the project directory `NAME` in exactly one of the parent directories listed in `/etc/gantry/project-dirs` (default `/etc/gantry`, packaged with `/etc/gantry` and `/mnt/*`), never following symlinks. | S |
+| FR-ST-06 | Pod `priority` (default 100, lower first) shall order pods across all registered projects at boot. Equal priorities start together; each level waits for its services to be running or healthy, up to a timeout, and a failing project does not stop the others. Shutdown goes in reverse. | M |
+| FR-ST-07 | Service `priority` (default 100, lower first) shall order services inside their pod as implied `depends_on` (healthy when the lower service has a healthcheck, else started). Equal priorities start together. A lower-priority service depending on a higher one in the same pod shall be rejected. | M |
 | FR-ST-04 | A container restarted by its engine (restart policy or manual restart) shall rejoin its pod. | M |
 | FR-ST-05 | A service without `restart:` shall get `unless-stopped`. `restart: "no"` shall opt out. One-off `run` containers never get a restart policy. | M |
 

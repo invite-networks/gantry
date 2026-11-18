@@ -141,6 +141,7 @@ no firewall).
 | Pod without a `firewall:` section gets the default rules | e2e | FR-FW-01 |
 | `data move` bind to bind and named volume to bind on Docker, Podman and kiri, with a writer running: data identical, no writes lost at cutover, second run is a no-op | manual (2026-11-18) | FR-CLI-17 |
 | `up` refuses a moved path before `data move`; a non-empty destination is refused | manual (2026-11-18) | FR-CLI-17, FR-CLI-18 |
+| `boot stop` then `boot start` with pods at priority 10, 50 and 100 in two projects: levels in order, a priority 100 service waits for its pod's priority 10 service to be healthy; `down` unregisters | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07 |
 | Host has no `gantry` table | e2e | FR-FW-02, NFR-SEC-01 |
 | `ps` shows redis healthy | e2e | FR-CLI-05, FR-CLI-08 |
 | Docker restart keeps the pod (Docker only) | e2e | FR-ST-04 |
@@ -231,7 +232,7 @@ Run on ENV-LAN before a release. Record revision, host and result.
 |---|---|---|---|
 | MT-01 | `examples/basic`: `up -d`, reach both pods from another LAN machine, `down`. | Pods answer at their addresses; nothing left in `ip netns` or `/run/gantry`. | FR-NET-01, FR-NET-06, FR-CLI-04 |
 | MT-02 | `examples/mixed`: one pod with Docker, Podman and kiri services. | All three share the pod address and loopback. | FR-RT-07 |
-| MT-03 | Reboot with `gantry@<name>` enabled. | Project is up after boot; old containers replaced. | FR-ST-02, FR-ST-03 |
+| MT-03 | Reboot with the project registered for boot (`gantry boot ls`). | Project is up after boot; old containers replaced. | FR-ST-02, FR-ST-03 |
 | MT-04 | Change a DHCP reservation so the pod gets a new address on renew. | Other pods' hosts files and firewall rules follow the new address. | FR-ADDR-05 |
 | MT-05 | Edit a pod's address and run `up`. | Pod and its containers are recreated; other pods untouched. | FR-POD-07 |
 | MT-06 | Edit only firewall rules and run `up`. | Ruleset updated with no container recreated. | FR-POD-07, FR-FW-01 |

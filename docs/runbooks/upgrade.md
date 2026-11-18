@@ -50,6 +50,24 @@ Running DHCP agents are the old binary until their pod is recreated. To move
 them to the new version, run `gantry down` and `gantry up -d` in a
 maintenance window.
 
+## From 0.3.1 to 0.3.2
+
+0.3.2 replaces the per-project `gantry@<name>.service` units with one
+`gantry-boot.service` that starts registered projects in pod priority
+order. The package does the switch: every `gantry@<name>` that was enabled
+is registered for boot (`/var/lib/gantry/boot/<name>`), its link is removed,
+and `gantry-boot.service` is enabled. Check with `sudo gantry boot ls`.
+
+Two behavior changes to review:
+
+* Services without `restart:` now get `restart: unless-stopped`. Add
+  `restart: "no"` to one-shot services that must stay down when they exit.
+  Every container is recreated once on the next `up`.
+* `gantry up -d` on an installed project registers it for boot, and
+  `gantry down` removes it. `gantry stop` does not change registration, so
+  a stopped project comes back at the next boot. Use `down` to keep a
+  project off.
+
 ## From 0.2 to 0.3
 
 0.3 moves networks into the pods and turns on a default firewall. Every

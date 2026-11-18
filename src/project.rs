@@ -41,6 +41,9 @@ impl std::fmt::Display for RuntimeKind {
     }
 }
 
+/// The priority of a pod or service that sets none.
+pub const DEFAULT_PRIORITY: u32 = 100;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub name: String,
@@ -122,6 +125,8 @@ pub struct Pod {
     pub extra_hosts: Vec<(String, IpAddr)>,
     pub sysctls: IndexMap<String, String>,
     pub ipv6: bool,
+    /// Boot order across the host (`gantry boot`): lower first.
+    pub priority: u32,
     pub firewall: Option<Firewall>,
     /// True for the loopback-only pod of a `network_mode: none` service.
     pub implicit: bool,
@@ -246,6 +251,9 @@ pub struct Volume {
 pub struct Service {
     pub name: String,
     pub pod: String,
+    /// Start order inside the pod: lower first. Turned into depends_on
+    /// entries on the pod's lower-priority services.
+    pub priority: u32,
     pub runtime: RuntimeKind,
     pub image: String,
     /// Built locally instead of pulled.

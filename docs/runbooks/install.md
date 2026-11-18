@@ -50,7 +50,7 @@ sudo apt install gantry
 Validate: `gantry --version` prints the version.
 
 The package installs `gantry` and `gantry-oci` in `/usr/bin`, the
-`gantry@.service` unit, `/etc/gantry/project-dirs`, the man page and shell
+`gantry-boot.service` unit (enabled), `/etc/gantry/project-dirs`, the man page and shell
 completions. It creates `/mnt/container-local` (root owned, mode 0755) for
 local project storage when it does not exist; an existing directory or
 mountpoint is left as it is, and purging the package never removes it. It also sets up
@@ -64,8 +64,9 @@ For hosts without the package, or to test a change:
 ```sh
 cargo build --release
 sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
-sudo install -m 644 contrib/systemd/gantry@.service /etc/systemd/system/
+sudo install -m 644 contrib/systemd/gantry-boot.service /etc/systemd/system/
 sudo systemctl daemon-reload
+sudo systemctl enable gantry-boot.service
 ```
 
 `cargo deb` builds the same .deb the repository serves. Do not mix the two
@@ -149,9 +150,10 @@ Expected: `OK`. If kiri listens elsewhere, set `GANTRY_KIRI_HOST`.
 
 ## 6. Run a project at boot
 
-Pods live under `/run`, so they are gone after a reboot. The
-`gantry@.service` template unit brings a project up at boot and down at
-shutdown.
+Pods live under `/run`, so they are gone after a reboot, and the engines'
+restart policies cannot bring containers back without them.
+`gantry-boot.service`, enabled by the package, runs `gantry boot start` at
+boot and `gantry boot stop` at shutdown for every registered project.
 
 A project is a directory holding `gantry.yaml`, its `.env` and usually its
 data. Gantry finds it by name in the directories listed in
@@ -170,13 +172,26 @@ another disk or an NFS mount, `/mnt/<storage>/myproject/`:
 sudo install -d -m 0755 /mnt/storage/myproject
 sudo install -m 0644 gantry.yaml /mnt/storage/myproject/
 sudo install -m 0600 .env /mnt/storage/myproject/      # if the project has one
-sudo systemctl enable --now gantry@myproject
+sudo gantry --installed myproject up -d                # starts and registers it
 ```
 
+`gantry up -d` registers an installed project for boot (it prints
+`Registered myproject to start at boot` the first time), and `gantry down`
+removes it. `gantry stop` does not: a stopped project comes back at boot.
+`up` without `-d`, or a project run from any other directory, is never
+registered. Registrations are files in `/var/lib/gantry/boot/`.
+
+Boot order comes from `priority` on pods, across every registered project
+on the host: lower first, default 100, equal levels together. Each level
+waits until its services are running, or healthy where they have a
+healthcheck, for up to 5 minutes, then the next level starts. A project
+that fails is reported and does not hold up the others. Service `priority`
+orders services inside their pod the same way. `sudo gantry boot ls` shows
+the order.
+
 A name must exist in exactly one of those places; Gantry refuses a name it
-finds twice. Symlinks are not followed. The unit runs
-`gantry --installed myproject up -d --wait`, and the same flag works by
-hand: `sudo gantry --installed myproject ps`.
+finds twice. Symlinks are not followed. The same name
+works by hand: `sudo gantry --installed myproject ps`.
 
 Keep the project directory, its top-level files and every directory above
 it owned by root and not writable by a group or others. Remote control
@@ -196,8 +211,9 @@ Prefer bind mounts to named volumes, which hide data inside the engine.
 The unit orders itself after `network-online.target`, `remote-fs.target`
 (NFS mounts), `docker.service`, `podman.socket` and `kiri.service`.
 
-Validate: `systemctl status gantry@myproject` is active, and
-`sudo gantry --installed myproject pod ls` lists the pods.
+Validate: `systemctl is-enabled gantry-boot.service` says `enabled`,
+`sudo gantry boot ls` lists the project, and after a reboot
+`journalctl -u gantry-boot` shows each priority level starting.
 
 ## 7. Environment overrides
 
@@ -230,10 +246,10 @@ Trigger: removing Gantry from a host.
 
    `down` reads the project file. If it is gone, use the manual cleanup in
    [recovery](recovery.md#4-manual-cleanup).
-2. Disable boot units:
+2. `down` also removed each project from boot. Stop the boot unit:
 
    ```sh
-   sudo systemctl disable --now 'gantry@*'
+   sudo systemctl disable --now gantry-boot.service
    ```
 3. Remove the Docker runtime: delete the `gantry` entry under `runtimes`
    in `/etc/docker/daemon.json` and `sudo systemctl reload docker`. Do this
@@ -247,7 +263,7 @@ Trigger: removing Gantry from a host.
    ```sh
    sudo apt purge gantry
    # source installs instead:
-   # sudo rm /usr/local/bin/gantry /usr/local/bin/gantry-oci /etc/systemd/system/gantry@.service
+   # sudo rm /usr/local/bin/gantry /usr/local/bin/gantry-oci /etc/systemd/system/gantry-boot.service
    # sudo systemctl daemon-reload
    ip netns list | grep '^gt-'          # should print nothing
    sudo rm -rf /run/gantry

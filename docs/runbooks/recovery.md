@@ -19,10 +19,11 @@ longer exist. Docker containers with a restart policy fail to start, with
 the shim reporting that the pod namespace does not exist. That is
 expected.
 
-With the boot unit enabled (`gantry@<name>`), nothing needs doing: it
-runs `gantry up -d --wait` once the network and engines are up.
+Projects registered for boot (`gantry boot ls`) need nothing:
+`gantry-boot.service` starts them in pod priority order once the network,
+NFS mounts and engines are up.
 
-Without it:
+For a project that is not registered:
 
 ```sh
 cd <project directory>
@@ -37,8 +38,9 @@ Failure handling:
 
 * `engine` errors naming a socket: the engine is not up yet. Start it, or
   for Podman make sure `podman.socket` is enabled, then rerun.
-* The boot unit failed: `journalctl -u gantry@<name>`, fix the cause,
-  `systemctl restart gantry@<name>`.
+* A project failed at boot: `journalctl -u gantry-boot` names it and the
+  error. The others are up. Fix the cause and run
+  `sudo gantry --installed <name> up -d`.
 
 ## 2. After a crash or interrupted command
 

@@ -492,8 +492,9 @@ reboot, by design.
 * Podman hosts: `podman.socket` enabled.
 * kiri hosts: patched kiri serving `/run/kiri/docker.sock`.
 * Projects for boot: `<parent>/<name>/gantry.yaml`, where the parents are
-  listed in `/etc/gantry/project-dirs` (`/etc/gantry`, `/mnt/*`), with
-  `gantry@<name>.service` enabled.
+  listed in `/etc/gantry/project-dirs` (`/etc/gantry`, `/mnt/*`),
+  registered in `/var/lib/gantry/boot/<name>` by `gantry up -d` and started
+  by `gantry-boot.service` in pod priority order (`boot::start`).
 
 Procedures are in the [runbooks](../runbooks/README.md).
 

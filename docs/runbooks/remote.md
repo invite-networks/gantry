@@ -39,7 +39,7 @@ Sources: `contrib/remote/`. The package recommends `sudo` and
 Trigger: a host should be operated remotely.
 
 1. Put the project in place as root, in a directory listed in
-   `/etc/gantry/project-dirs`, the same way `gantry@.service` finds it
+   `/etc/gantry/project-dirs`, the same way boot finds it
    (see [install](install.md#6-run-a-project-at-boot)):
 
    ```sh

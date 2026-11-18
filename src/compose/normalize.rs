@@ -133,6 +133,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
             extra_hosts: extra_hosts(p.extra_hosts, &format!("pod {pod_name}"))?,
             sysctls: list_or_map(p.sysctls, ctx, false),
             ipv6: p.ipv6.unwrap_or(true),
+            priority: p.priority.unwrap_or(DEFAULT_PRIORITY),
             firewall: Some(firewall(&pod_name, p.firewall.unwrap_or_default())?),
             implicit: false,
             name: pod_name.clone(),
@@ -297,6 +298,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
             }
         }
     }
+    pod_priorities(&mut services)?;
     check_cycles(&services)?;
     for pod in pods.values() {
         check_pod_names(pod)?;
@@ -497,6 +499,7 @@ fn loopback_pod(name: &str) -> Pod {
         extra_hosts: vec![],
         sysctls: IndexMap::new(),
         ipv6: true,
+        priority: DEFAULT_PRIORITY,
         firewall: None,
         implicit: true,
     }
@@ -1225,6 +1228,7 @@ fn service(
         user: s.user.map(raw::Scalar::into_string),
         labels,
         mounts,
+        priority: s.priority.unwrap_or(DEFAULT_PRIORITY),
         // Engines restart crashed services; systemd only runs `up` at boot.
         restart: s.restart.or_else(|| Some(DEFAULT_RESTART.into())),
         healthcheck,
@@ -1490,6 +1494,43 @@ fn mount(
     }
 }
 
+/// Turns service priorities into depends_on: a service waits for every
+/// service of its pod with a lower priority (healthy when it has a
+/// healthcheck, else started). Equal priorities start together.
+fn pod_priorities(services: &mut IndexMap<String, Service>) -> Result<()> {
+    let snapshot: Vec<(String, String, u32, bool)> = services
+        .values()
+        .map(|s| {
+            let healthy = s
+                .healthcheck
+                .as_ref()
+                .is_some_and(|h| !h.disabled && h.test.is_some());
+            (s.name.clone(), s.pod.clone(), s.priority, healthy)
+        })
+        .collect();
+    for (name, pod, prio, _) in &snapshot {
+        for (other, opod, oprio, healthy) in &snapshot {
+            if opod != pod || oprio >= prio {
+                continue;
+            }
+            if services[other].depends_on.contains_key(name) {
+                return Err(Error::config(format!(
+                    "service {other} (priority {oprio}) depends on {name} (priority {prio}) in pod {pod}; lower priorities start first, so give {name} the lower priority or drop the depends_on"
+                )));
+            }
+            let cond = if *healthy {
+                DependsCondition::ServiceHealthy
+            } else {
+                DependsCondition::ServiceStarted
+            };
+            if let Some(s) = services.get_mut(name) {
+                s.depends_on.entry(other.clone()).or_insert(cond);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_cycles(services: &IndexMap<String, Service>) -> Result<()> {
     fn visit<'a>(
         n: &'a str,
@@ -1608,6 +1649,41 @@ mod tests {
         assert_eq!(b.ifname, "mgmt");
         assert_eq!(b.addressing, Addressing::Dhcp);
         assert!(b.default_route);
+    }
+
+    #[test]
+    fn service_priority_orders_the_pod() {
+        let p = try_load(&format!(
+            "name: t\n{POD}    priority: 10\nservices:\n  db: {{ image: x, priority: 10, healthcheck: {{ test: [CMD, 'true'] }} }}\n  cache: {{ image: x, priority: 10 }}\n  app: {{ image: x, depends_on: [cache] }}\n  web: {{ image: x }}\n  late: {{ image: x, priority: 200 }}\n"
+        ))
+        .unwrap();
+        assert_eq!(p.pods["p"].priority, 10);
+        let app = &p.services["app"];
+        assert_eq!(app.priority, 100);
+        // Lower priorities become depends_on: healthy with a healthcheck,
+        // else started. An explicit entry keeps its condition.
+        assert_eq!(app.depends_on["db"], DependsCondition::ServiceHealthy);
+        assert_eq!(app.depends_on["cache"], DependsCondition::ServiceStarted);
+        // Equal priorities do not wait for each other.
+        assert!(!p.services["db"].depends_on.contains_key("cache"));
+        assert!(!p.services["web"].depends_on.contains_key("app"));
+        assert_eq!(p.services["late"].depends_on.len(), 4);
+        let o = crate::orchestrator::Orchestrator::new(p);
+        let levels = o.levels(&o.start_order(&[]).unwrap());
+        assert_eq!(levels.len(), 3, "{levels:?}");
+        assert!(levels[0].contains(&"db".to_string()) && levels[0].contains(&"cache".to_string()));
+        assert!(levels[1].contains(&"app".to_string()) && levels[1].contains(&"web".to_string()));
+        assert_eq!(levels[2], vec!["late".to_string()]);
+    }
+
+    #[test]
+    fn priority_contradicting_depends_on_is_refused() {
+        let e = try_load(&format!(
+            "name: t\n{POD}services:\n  db: {{ image: x, priority: 10, depends_on: [app] }}\n  app: {{ image: x }}\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("lower priorities start first"), "{e}");
     }
 
     #[test]

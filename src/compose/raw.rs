@@ -120,6 +120,8 @@ pub struct Pod {
     pub sysctls: Option<ListOrMap>,
     pub ipv6: Option<bool>,
     pub firewall: Option<Firewall>,
+    /// Boot order across the host: lower starts first, equal together.
+    pub priority: Option<u32>,
     /// Default runtime for services in this pod.
     pub runtime: Option<String>,
     #[serde(flatten)]
@@ -272,6 +274,8 @@ pub struct Service {
     pub logging: Option<Logging>,
     pub platform: Option<String>,
     pub pod: Option<String>,
+    /// Start order inside the pod: lower starts first, equal together.
+    pub priority: Option<u32>,
     pub runtime: Option<String>,
     pub container_name: Option<String>,
     pub command: Option<StringOrList>,

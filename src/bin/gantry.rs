@@ -194,6 +194,9 @@ enum Cmd {
     /// Service data commands
     #[command(subcommand)]
     Data(DataCmd),
+    /// Projects started at boot, in pod priority order
+    #[command(subcommand)]
+    Boot(BootCmd),
     /// One time host setup for a runtime
     #[command(subcommand)]
     Setup(SetupCmd),
@@ -224,6 +227,23 @@ struct UpArgs {
     #[arg(long)]
     wait_timeout: Option<u64>,
     services: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum BootCmd {
+    /// Show the registered projects and the order boot starts their pods
+    #[command(alias = "list")]
+    Ls,
+    /// Start every registered project, one pod priority level at a time
+    /// (run by gantry-boot.service)
+    Start {
+        /// Seconds to wait for each level to be running or healthy
+        #[arg(long, default_value_t = 300)]
+        wait_timeout: u64,
+    },
+    /// Stop every registered project in reverse priority order and take
+    /// its pods down; registrations are kept (run at shutdown)
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -528,6 +548,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             };
             o.up(&opts).await?;
             if a.detach {
+                // Installed projects come back at boot (gantry-boot.service).
+                if let Some(name) = gantry::boot::register(&o.project.dir)? {
+                    println!("Registered {name} to start at boot");
+                }
                 return Ok(ExitCode::SUCCESS);
             }
             println!(
@@ -544,7 +568,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Down { volumes, timeout } => {
             require_root()?;
-            load_project(&g)?.down(volumes, timeout).await?;
+            let o = load_project(&g)?;
+            o.down(volumes, timeout).await?;
+            if let Some(name) = gantry::boot::unregister(&o.project.dir)? {
+                println!("Removed {name} from boot");
+            }
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Ps => {
@@ -681,6 +709,30 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             require_root()?;
             load_project(&g)?.start(&services).await?;
             Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Boot(BootCmd::Ls) => {
+            print!("{}", gantry::boot::plan()?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Boot(BootCmd::Start { wait_timeout }) => {
+            require_root()?;
+            let failed = gantry::boot::start(Duration::from_secs(wait_timeout)).await;
+            // 2: some projects failed, the rest are up (SuccessExitStatus in
+            // the unit, so shutdown still runs `boot stop`).
+            Ok(if failed == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(2)
+            })
+        }
+        Cmd::Boot(BootCmd::Stop) => {
+            require_root()?;
+            let failed = gantry::boot::stop().await;
+            Ok(if failed == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         Cmd::Data(DataCmd::Move {
             dry_run,

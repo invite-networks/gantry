@@ -1,7 +1,7 @@
 //! Installed projects: found by name in the project directories listed in
 //! `/etc/gantry/project-dirs`, so a project can live next to its data (for
 //! example `/mnt/container-2/myapp/`) and still be started by
-//! `gantry@myapp.service` or over remote control.
+//! `gantry-boot.service` or over remote control.
 
 use crate::errors::{Context, Error, Result};
 use std::path::{Path, PathBuf};

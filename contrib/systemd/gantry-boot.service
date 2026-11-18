@@ -1,0 +1,23 @@
+# Starts every registered Gantry project at boot, one pod priority level
+# at a time (lowest first, equal levels together), and stops them in
+# reverse at shutdown. `gantry up -d` on an installed project registers it
+# (see /etc/gantry/project-dirs); `gantry down` removes it.
+# `gantry boot ls` shows the order.
+[Unit]
+Description=Gantry projects
+# remote-fs.target: projects may live on NFS, next to their data.
+Wants=network-online.target remote-fs.target
+After=network-online.target remote-fs.target docker.service podman.socket kiri.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/gantry boot start
+ExecStop=/usr/bin/gantry boot stop
+# 2 means some projects failed and the rest are up; see the journal.
+SuccessExitStatus=2
+TimeoutStartSec=1h
+TimeoutStopSec=15min
+
+[Install]
+WantedBy=multi-user.target

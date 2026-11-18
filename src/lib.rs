@@ -8,6 +8,7 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 
+pub mod boot;
 pub mod compose;
 pub mod datamove;
 pub mod errors;

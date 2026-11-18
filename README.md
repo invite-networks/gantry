@@ -48,7 +48,7 @@ way `ip netns add` does, and every container joins them by path.
 
 ## Status
 
-Version 0.3.1, rapid development. Tested on Debian 13 (kernel 6.12) with
+Version 0.3.2, rapid development. Tested on Debian 13 (kernel 6.12) with
 Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 
 ## Install
@@ -222,15 +222,33 @@ Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman):
 
 ## Running at boot
 
-Pods live under `/run`, so they are gone after a reboot. The unit
-`gantry@.service` (installed by the package, or copy it from
-`contrib/systemd/`) runs `gantry --installed <name> up -d --wait` at boot
-and `down` at shutdown. The project is the directory `<name>` in one of the
+Pods live under `/run`, so they are gone after a reboot, and engine
+restart policies cannot bring containers back on their own. One unit,
+`gantry-boot.service` (enabled by the package), starts every registered
+project at boot and stops them at shutdown.
+
+`gantry up -d` on an installed project registers it, and `gantry down`
+removes it. An installed project is the directory `<name>` in one of the
 parents listed in `/etc/gantry/project-dirs`, by default `/etc/gantry/` or
-`/mnt/*/`, so it can live next to its data:
+`/mnt/*/`, so it can live next to its data.
+
+Boot starts pods in `priority` order across every project on the host,
+lowest first (default 100), and waits for each level to be running, or
+healthy where a service has a healthcheck, before the next. Inside a pod,
+service `priority` orders the services the same way. Equal priorities start
+together.
+
+```yaml
+pods:
+  dns:
+    priority: 10        # before every pod at the default 100
+services:
+  db: { image: postgres:17, pod: app, priority: 10 }   # before app's others
+```
 
 ```sh
-sudo systemctl enable --now gantry@myproject
+sudo gantry --installed myproject up -d   # starts it and registers it
+sudo gantry boot ls                       # the order boot will use
 ```
 
 ## Remote control

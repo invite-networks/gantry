@@ -13,6 +13,11 @@ if [ "$1" = purge ]; then
 	if getent group gantry >/dev/null; then
 		groupdel gantry 2>/dev/null || true
 	fi
+	rm -f /var/lib/gantry/boot/*
+	rmdir /var/lib/gantry/boot 2>/dev/null || true
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper purge gantry-boot.service >/dev/null 2>&1 || true
+	fi
 	rmdir /var/lib/gantry 2>/dev/null || true
 	if [ -d /run/systemd/system ] && command -v sshd >/dev/null 2>&1 && sshd -t 2>/dev/null; then
 		systemctl reload ssh.service 2>/dev/null ||

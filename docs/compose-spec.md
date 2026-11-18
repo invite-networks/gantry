@@ -56,6 +56,7 @@ pods:
     share: [uts, ipc]           # default; net is always shared
     ipv6: true                  # false disables IPv6 in the pod
     runtime: podman             # default runtime for services in this pod
+    priority: 100               # boot order across the host; lower first
     dns: [1.1.1.1]              # default: the lease's servers, else the host's upstream servers
     dns_search: [example.com]
     dns_opt: [ndots:2]
@@ -211,8 +212,8 @@ Settings that shape the pod (`networks`, `hostname`, `domainname`,
 `ipc`) are an error on a service: set them under `pods:`.
 
 A service without `restart:` gets `restart: unless-stopped`, so its engine
-restarts it after a crash. systemd only runs `gantry up` at boot
-(`gantry@<name>.service`); it does not watch containers. Write
+restarts it after a crash. systemd only starts projects at boot
+(`gantry-boot.service`); it does not watch containers. Write
 `restart: "no"` (quoted) for a service that should stay down when it exits,
 such as a one-shot migration.
 
@@ -220,7 +221,34 @@ such as a one-shot migration.
 the other service's pod. `network_mode: none` gives it a pod with loopback
 only.
 
-Supported keys: `image`, `pod`, `runtime` (extension), `container_name`,
+### priority (extension)
+
+`priority` orders startup. Lower numbers start first, the default is 100,
+and equal priorities start together.
+
+* **On a pod**, it orders pods across every project registered for boot on
+  the host (`gantry-boot.service`, `gantry boot ls`). Each level waits for
+  its services to be running, or healthy where they have a healthcheck,
+  before the next level starts.
+* **On a service**, it orders services inside their pod. Gantry turns it
+  into `depends_on` entries: a service waits for every service of its pod
+  with a lower priority, `service_healthy` when that service has a
+  healthcheck and `service_started` otherwise. An explicit `depends_on`
+  keeps its own condition. A lower-priority service that depends on a
+  higher-priority one in the same pod is an error. `depends_on` across pods
+  is unaffected.
+
+```yaml
+pods:
+  app:
+    network: [{ parent: vlan4, address: 192.0.2.218/29, gateway: 192.0.2.222 }]
+services:
+  db:    { image: postgres:17, priority: 10, healthcheck: { test: [CMD, pg_isready] } }
+  cache: { image: redis:7, priority: 10 }      # starts with db
+  web:   { image: nginx }                      # 100: waits for db healthy, cache started
+```
+
+Supported keys: `image`, `pod`, `priority` (extension), `runtime` (extension), `container_name`,
 `command`, `entrypoint`, `environment`, `env_file`, `working_dir`, `user`,
 `labels`, `volumes` (bind, named, anonymous, tmpfs; short and long form),
 `tmpfs`, `restart`, `healthcheck`, `depends_on` (`service_started`,

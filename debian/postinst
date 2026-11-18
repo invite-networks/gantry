@@ -31,6 +31,29 @@ if [ "$1" = configure ]; then
 		echo "gantry: sudo is not installed; remote control over SSH needs it" >&2
 	fi
 
+	# Boot: one gantry-boot.service starts registered projects in pod
+	# priority order. Gantry 0.3.1 and earlier enabled one gantry@<name>.service per
+	# project; register those projects instead and drop their links.
+	install -d -o root -g root -m 0700 /var/lib/gantry/boot
+	for link in /etc/systemd/system/multi-user.target.wants/gantry@*.service; do
+		[ -L "$link" ] || continue
+		name=${link##*/gantry@}
+		name=${name%.service}
+		case $name in
+		'' | -* | .* | *[!A-Za-z0-9._-]*) ;;
+		*) : >"/var/lib/gantry/boot/$name" ;;
+		esac
+		rm -f "$link"
+	done
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload 2>/dev/null || true
+	fi
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper enable gantry-boot.service >/dev/null 2>&1 || true
+	elif [ -d /run/systemd/system ]; then
+		systemctl enable gantry-boot.service >/dev/null 2>&1 || true
+	fi
+
 	# Pick up /etc/ssh/sshd_config.d/gantry.conf.
 	if command -v sshd >/dev/null 2>&1; then
 		if sshd -t 2>/dev/null; then
