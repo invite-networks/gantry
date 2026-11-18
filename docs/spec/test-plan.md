@@ -141,6 +141,7 @@ no firewall).
 | Pod without a `firewall:` section gets the default rules | e2e | FR-FW-01 |
 | `data move` bind to bind and named volume to bind on Docker, Podman and kiri, with a writer running: data identical, no writes lost at cutover, second run is a no-op | manual (2026-11-18) | FR-CLI-17 |
 | `up` refuses a moved path before `data move`; a non-empty destination is refused | manual (2026-11-18) | FR-CLI-17, FR-CLI-18 |
+| Reboot of the reference host (0.3.2 package) with three registered projects under /mnt on Podman (priority 10), kiri (50) and Docker (100, db at service priority 10 with a healthcheck): levels in order within 0.6 s, web created 3.3 s later once db was healthy, every pod back with its address and the default firewall, unit exit 0. The first reboot found Docker's restart-at-boot creating the pod's resolv.conf as a directory (fixed) | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07, MT-03 |
 | `boot stop` then `boot start` with pods at priority 10, 50 and 100 in two projects: levels in order, a priority 100 service waits for its pod's priority 10 service to be healthy; `down` unregisters | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07 |
 | Host has no `gantry` table | e2e | FR-FW-02, NFR-SEC-01 |
 | `ps` shows redis healthy | e2e | FR-CLI-05, FR-CLI-08 |

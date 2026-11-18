@@ -83,15 +83,48 @@ pub fn hosts_file(entries: &[HostEntry]) -> String {
 }
 
 pub fn write_if_changed(path: &Path, content: &str) -> crate::Result<()> {
+    clear_engine_mountpoint(path)?;
     if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
         return Ok(());
     }
     crate::util::write_in_place(path, content.as_bytes())
 }
 
+/// After a reboot Docker restarts containers with a restart policy before
+/// Gantry rebuilds their pod. It creates each missing bind source as an
+/// empty directory, so the pod's hosts, hostname and resolv.conf can show
+/// up as directories. Those paths are Gantry's own; an empty directory
+/// there is removed. Anything else is left alone and reported.
+fn clear_engine_mountpoint(path: &Path) -> crate::Result<()> {
+    use crate::errors::Context;
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.is_dir() => std::fs::remove_dir(path).ctx(|| {
+            format!(
+                "{} is a directory where Gantry writes a file, and it is not empty",
+                path.display()
+            )
+        }),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replaces_an_empty_directory_left_by_an_engine() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("resolv.conf");
+        std::fs::create_dir(&p).unwrap();
+        write_if_changed(&p, "nameserver 1.1.1.1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "nameserver 1.1.1.1\n");
+        let q = d.path().join("hosts");
+        std::fs::create_dir(&q).unwrap();
+        std::fs::write(q.join("keep"), "x").unwrap();
+        assert!(write_if_changed(&q, "x").is_err());
+        assert!(q.join("keep").exists());
+    }
 
     #[test]
     fn resolv_roundtrip() {
