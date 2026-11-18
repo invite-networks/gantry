@@ -39,6 +39,15 @@ struct Global {
     /// Directory relative paths resolve against
     #[arg(long, global = true)]
     project_directory: Option<PathBuf>,
+    /// Use the installed project NAME, found by name in the directories
+    /// listed in /etc/gantry/project-dirs (default /etc/gantry)
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        conflicts_with = "project_directory"
+    )]
+    installed: Option<String>,
     /// Environment file(s) for interpolation (default: .env)
     #[arg(long = "env-file", global = true)]
     env_files: Vec<PathBuf>,
@@ -292,6 +301,8 @@ enum SetupCmd {
 enum InternalCmd {
     /// Print the man page
     Man,
+    /// Print the directory of an installed project
+    Locate { name: String },
     /// DHCP agent for one pod interface
     DhcpAgent {
         #[arg(long)]
@@ -366,6 +377,11 @@ fn main() -> ExitCode {
 }
 
 fn load_project(g: &Global) -> Result<Orchestrator> {
+    let installed = g
+        .installed
+        .as_deref()
+        .map(gantry::installed::locate)
+        .transpose()?;
     let opts = LoadOptions {
         files: g.files.clone(),
         project_name: g.project_name.clone(),
@@ -373,7 +389,7 @@ fn load_project(g: &Global) -> Result<Orchestrator> {
         env_files: g.env_files.clone(),
         profiles: g.profiles.clone(),
         runtime: g.runtime,
-        cwd: None,
+        cwd: installed,
     };
     let loaded = load(&opts)?;
     for w in &loaded.warnings {
@@ -424,6 +440,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Completion { shell } => {
             use clap::CommandFactory;
             clap_complete::generate(shell, &mut Cli::command(), "gantry", &mut std::io::stdout());
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Internal(InternalCmd::Locate { name }) => {
+            println!("{}", gantry::installed::locate(&name)?.display());
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Internal(InternalCmd::Man) => {

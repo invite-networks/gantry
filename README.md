@@ -224,8 +224,10 @@ Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman):
 
 Pods live under `/run`, so they are gone after a reboot. The unit
 `gantry@.service` (installed by the package, or copy it from
-`contrib/systemd/`) runs `gantry up -d --wait` for `/etc/gantry/<name>/` at
-boot and `gantry down` at shutdown:
+`contrib/systemd/`) runs `gantry --installed <name> up -d --wait` at boot
+and `down` at shutdown. The project is the directory `<name>` in one of the
+parents listed in `/etc/gantry/project-dirs`, by default `/etc/gantry/` or
+`/mnt/*/`, so it can live next to its data:
 
 ```sh
 sudo systemctl enable --now gantry@myproject
@@ -234,8 +236,8 @@ sudo systemctl enable --now gantry@myproject
 ## Remote control
 
 Gantry runs on the host it manages. To drive it from elsewhere, the package
-sets up a `gantry` account that can only operate projects in
-`/etc/gantry/<name>/` over SSH, once you add a key to
+sets up a `gantry` account that can only operate installed projects over
+SSH, once you add a key to
 `/etc/gantry/remote/authorized_keys`:
 
 ```sh

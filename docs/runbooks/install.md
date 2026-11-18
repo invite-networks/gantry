@@ -148,52 +148,53 @@ Expected: `OK`. If kiri listens elsewhere, set `GANTRY_KIRI_HOST`.
 
 Pods live under `/run`, so they are gone after a reboot. The
 `gantry@.service` template unit brings a project up at boot and down at
-shutdown. Each project is a directory under `/etc/gantry`:
+shutdown.
 
-```sh
-sudo install -d -m 0755 /etc/gantry/myproject
-sudo install -m 0644 gantry.yaml /etc/gantry/myproject/
-sudo install -m 0600 .env /etc/gantry/myproject/      # if the project has one
-sudo systemctl enable --now gantry@myproject
+A project is a directory holding `gantry.yaml`, its `.env` and usually its
+data. Gantry finds it by name in the directories listed in
+`/etc/gantry/project-dirs`, one parent per line, with `*` and `?` matching
+within a path component. The package installs:
+
+```
+/etc/gantry
+/mnt/*
 ```
 
-The project can also live next to its data, on another disk or an NFS
-mount, so it moves with the data. Keep it there and make
-`/etc/gantry/<name>` a symlink to it:
+so `myproject` can be `/etc/gantry/myproject/` or, next to its data on
+another disk or an NFS mount, `/mnt/<storage>/myproject/`:
 
 ```sh
 sudo install -d -m 0755 /mnt/storage/myproject
 sudo install -m 0644 gantry.yaml /mnt/storage/myproject/
-sudo install -m 0600 .env /mnt/storage/myproject/
-sudo ln -s /mnt/storage/myproject /etc/gantry/myproject
+sudo install -m 0600 .env /mnt/storage/myproject/      # if the project has one
 sudo systemctl enable --now gantry@myproject
 ```
 
-The unit starts after `remote-fs.target`, so NFS mounts are up first. On
-NFS, root must keep root ownership (the export cannot squash root), or
-remote control refuses the project.
+A name must exist in exactly one of those places; Gantry refuses a name it
+finds twice. Symlinks are not followed. The unit runs
+`gantry --installed myproject up -d --wait`, and the same flag works by
+hand: `sudo gantry --installed myproject ps`.
 
-Keep the project file, `.env` and data owned by root and not writable by a
-group or others. Container data can sit beside the project file, or
-elsewhere on storage chosen for it, bind mounted by absolute path:
+Keep the project directory, its top-level files and every directory above
+it owned by root and not writable by a group or others. Remote control
+refuses anything else. On NFS that means the export must not squash root.
+Data directories inside the project may be owned by the container's user.
+Bind data with a path relative to the project, so it moves with it:
 
 ```yaml
 services:
   db:
     volumes:
-      - ${DATA_DIR}/db:/var/lib/postgresql/data
+      - ./db/data:/var/lib/postgresql/data
 ```
 
-with `DATA_DIR=/srv/myproject` (or wherever the host keeps data) in the
-project's `.env`. Data then survives the project being replaced, backups can
-cover one data tree, and remote control's ownership checks stay simple.
 Prefer bind mounts to named volumes, which hide data inside the engine.
 
-The unit orders itself after `network-online.target`, `docker.service`,
-`podman.socket` and `kiri.service`.
+The unit orders itself after `network-online.target`, `remote-fs.target`
+(NFS mounts), `docker.service`, `podman.socket` and `kiri.service`.
 
 Validate: `systemctl status gantry@myproject` is active, and
-`cd /etc/gantry/myproject && sudo gantry pod ls` lists the pods.
+`sudo gantry --installed myproject pod ls` lists the pods.
 
 ## 7. Environment overrides
 

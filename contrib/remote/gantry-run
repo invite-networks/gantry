@@ -54,31 +54,29 @@ int_ok() {
 # The project directory and the files Gantry reads from it must be root
 # owned and writable only by root, or the caller could change what runs.
 #
-# /etc/gantry/<name> may be a symlink to a project kept elsewhere, such as
-# next to its data on an NFS mount. Only root can create that symlink in
-# /etc/gantry, and the target and every directory above it must also be
-# root owned and not writable by a group or others, so nobody else can
-# swap the project out from under it.
+# Projects are found by name in the directories listed in
+# /etc/gantry/project-dirs (gantry internal locate), for example next to
+# their data under /mnt. That list, and every directory from / down to the
+# project, must be root owned and not writable by a group or others, so
+# nobody else can redirect or swap the project.
 resolve_project() {
-	[ -d "$ETC" ] && [ ! -L "$ETC" ] || die "no such project"
-	[ -d "$1" ] || die "no such project"
-	if [ -L "$1" ]; then
-		bad=$(find "$1" -maxdepth 0 ! -user root -print -quit)
-		[ -z "$bad" ] || die "$1 is a symlink not owned by root"
-		real=$(readlink -f -- "$1") || die "no such project"
-		[ -d "$real" ] && [ ! -L "$real" ] || die "no such project"
-		p=$real
-		while [ "$p" != / ]; do
-			p=$(dirname -- "$p")
-			bad=$(find "$p" -maxdepth 0 \( ! -user root -o \( -perm /022 ! -perm -1000 \) \) -print -quit)
-			[ -z "$bad" ] || die "$bad (above the project) is not owned by root or is writable by a group or others"
-		done
-		dir=$real
+	conf=$ETC/project-dirs
+	if [ -e "$conf" ]; then
+		bad=$(find "$conf" -maxdepth 0 \( -type l -o ! -user root -o -perm /022 \) -print -quit)
+		[ -z "$bad" ] || die "$conf is not owned by root or is writable by a group or others"
 	fi
+	dir=$("$GANTRY" internal locate "$1" 2>&1) || die "${dir#gantry: }"
+	[ -d "$dir" ] && [ ! -L "$dir" ] || die "no such project"
+	p=$dir
+	while [ "$p" != / ]; do
+		p=$(dirname -- "$p")
+		bad=$(find "$p" -maxdepth 0 \( -type l -o ! -user root -o \( -perm /022 ! -perm -1000 \) \) -print -quit)
+		[ -z "$bad" ] || die "$bad (above the project) is not owned by root or is writable by a group or others"
+	done
 }
 
 check_tree() {
-	bad=$(find "$ETC" "$1" -maxdepth 0 \( ! -user root -o -perm /022 \) -print -quit)
+	bad=$(find "$1" -maxdepth 0 \( ! -user root -o -perm /022 \) -print -quit)
 	[ -z "$bad" ] || die "$bad is not owned by root or is writable by a group or others"
 	bad=$(find "$1" -mindepth 1 -maxdepth 1 -type f \( ! -user root -o -perm /022 \) -print -quit)
 	[ -z "$bad" ] || die "$bad is not owned by root or is writable by a group or others"
@@ -99,8 +97,7 @@ esac
 
 project=$1
 name_ok "$project" || die "invalid project name"
-dir=$ETC/$project
-resolve_project "$dir"
+resolve_project "$project"
 check_tree "$dir"
 [ $# -ge 2 ] || usage
 cmd=$2

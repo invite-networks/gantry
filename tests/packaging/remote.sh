@@ -66,13 +66,16 @@ chmod 775 /etc/gantry/demo; out=$($S demo config --services 2>&1) && bad "group 
 chown gantry /etc/gantry/demo/gantry.yaml; out=$($S demo config 2>&1) && bad "gantry-owned file allowed" || ok "gantry-owned file: $out"; chown root /etc/gantry/demo/gantry.yaml
 mkdir -p /etc/gantry/demo/app; chown gantry /etc/gantry/demo/app; out=$($S demo config 2>&1) && bad "gantry-owned subdir allowed" || ok "gantry-owned subdir: $out"; rm -r /etc/gantry/demo/app
 mkdir -p /etc/gantry/demo/data; chown 999:999 /etc/gantry/demo/data; out=$($S demo config --services 2>&1) && ok "container-owned data dir allowed" || bad "data dir refused: $out"; rm -r /etc/gantry/demo/data
-ln -s /tmp /etc/gantry/link; out=$($S link config 2>&1) && bad "symlink to /tmp allowed" || ok "symlink to /tmp: $out"
-# A project kept elsewhere (next to its data) through a root-owned symlink.
-mkdir -p /srv/store/demo2; cp /etc/gantry/demo/gantry.yaml /srv/store/demo2/; ln -s /srv/store/demo2 /etc/gantry/demo2
-out=$($S demo2 config --services 2>&1) && [ "$out" = nginx ] && ok "symlinked project: $out" || bad "symlinked project refused: $out"
-chmod 775 /srv/store; out=$($S demo2 config 2>&1) && bad "group writable parent allowed" || ok "group writable parent: $out"; chmod 755 /srv/store
-chown gantry /srv/store; out=$($S demo2 config 2>&1) && bad "gantry-owned parent allowed" || ok "gantry-owned parent: $out"; chown root /srv/store
-chmod 777 /srv/store/demo2; out=$($S demo2 config 2>&1) && bad "world writable target allowed" || ok "world writable target: $out"; chmod 755 /srv/store/demo2
+ln -s /tmp /etc/gantry/link; out=$($S link config 2>&1) && bad "symlinked project allowed" || ok "symlinked project: $out"; rm /etc/gantry/link
+# A project kept next to its data under /mnt, found through project-dirs.
+grep -qx '/mnt/\*' /etc/gantry/project-dirs && ok "project-dirs ships /mnt/*" || bad "project-dirs: $(cat /etc/gantry/project-dirs)"
+mkdir -p /mnt/store/demo2; cp /etc/gantry/demo/gantry.yaml /mnt/store/demo2/
+out=$($S demo2 config --services 2>&1) && [ "$out" = nginx ] && ok "project under /mnt: $out" || bad "project under /mnt refused: $out"
+chmod 775 /mnt/store; out=$($S demo2 config 2>&1) && bad "group writable parent allowed" || ok "group writable parent: $out"; chmod 755 /mnt/store
+chown gantry /mnt/store; out=$($S demo2 config 2>&1) && bad "gantry-owned parent allowed" || ok "gantry-owned parent: $out"; chown root /mnt/store
+chmod 777 /mnt/store/demo2; out=$($S demo2 config 2>&1) && bad "world writable project allowed" || ok "world writable project: $out"; chmod 755 /mnt/store/demo2
+mkdir -p /mnt/other/demo2; out=$($S demo2 config 2>&1) && bad "duplicate name allowed" || ok "duplicate name: $out"; rmdir /mnt/other/demo2
+chmod 664 /etc/gantry/project-dirs; out=$($S demo2 config 2>&1) && bad "writable project-dirs allowed" || ok "writable project-dirs: $out"; chmod 644 /etc/gantry/project-dirs
 
 # Direct sudo for anything else must fail.
 su -s /bin/sh gantry -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"

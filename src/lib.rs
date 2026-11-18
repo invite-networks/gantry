@@ -12,6 +12,7 @@ pub mod compose;
 pub mod datamove;
 pub mod errors;
 pub mod firewall;
+pub mod installed;
 pub mod pod;
 pub mod project;
 pub mod redact;

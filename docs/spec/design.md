@@ -486,11 +486,13 @@ reboot, by design.
 
 ## 11. Deployment
 
-* Binaries in `/usr/local/bin`: `gantry`, `gantry-oci`.
+* Binaries in `/usr/bin` (package) or `/usr/local/bin` (source build):
+  `gantry`, `gantry-oci`.
 * Docker hosts: shim registered in `/etc/docker/daemon.json`.
 * Podman hosts: `podman.socket` enabled.
 * kiri hosts: patched kiri serving `/run/kiri/docker.sock`.
-* Projects for boot: `/etc/gantry/<name>/gantry.yaml` with
+* Projects for boot: `<parent>/<name>/gantry.yaml`, where the parents are
+  listed in `/etc/gantry/project-dirs` (`/etc/gantry`, `/mnt/*`), with
   `gantry@<name>.service` enabled.
 
 Procedures are in the [runbooks](../runbooks/README.md).

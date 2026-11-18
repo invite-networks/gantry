@@ -193,7 +193,7 @@ Priority: **M** must, **S** should, **C** could.
 |---|---|---|
 | FR-ST-01 | Runtime state shall live under `/run/gantry` and `/run/netns` and in container labels, and nowhere else. | M |
 | FR-ST-02 | After a reboot, `up` shall recreate pods and replace containers that belonged to the previous pod instances. | M |
-| FR-ST-03 | A systemd template unit shall bring a project in `/etc/gantry/<name>/` up at boot and down at shutdown. | S |
+| FR-ST-03 | A systemd template unit shall bring an installed project up at boot (after network and remote file systems) and down at shutdown. `--installed NAME` shall find the project directory `NAME` in exactly one of the parent directories listed in `/etc/gantry/project-dirs` (default `/etc/gantry`, packaged with `/etc/gantry` and `/mnt/*`), never following symlinks. | S |
 | FR-ST-04 | A container restarted by its engine (restart policy or manual restart) shall rejoin its pod. | M |
 
 ## 6. Non-functional requirements

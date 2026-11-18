@@ -9,7 +9,7 @@
 Gantry has to run on the host that runs the containers, as root. To drive
 it from another machine, the package sets up a `gantry` account that can log
 in with SSH keys and do one thing: operate projects that root has put in
-`/etc/gantry/<name>/`. It cannot change those projects, get a shell, forward
+an installed project directory (see below). It cannot change those projects, get a shell, forward
 ports or run anything else.
 
 ```
@@ -38,12 +38,13 @@ Sources: `contrib/remote/`. The package recommends `sudo` and
 
 Trigger: a host should be operated remotely.
 
-1. Put the project in place as root, in the same layout `gantry@.service`
-   uses:
+1. Put the project in place as root, in a directory listed in
+   `/etc/gantry/project-dirs`, the same way `gantry@.service` finds it
+   (see [install](install.md#6-run-a-project-at-boot)):
 
    ```sh
-   sudo install -d -m 0755 /etc/gantry/myproject
-   sudo install -m 0644 gantry.yaml /etc/gantry/myproject/
+   sudo install -d -m 0755 /mnt/storage/myproject
+   sudo install -m 0644 gantry.yaml /mnt/storage/myproject/
    ```
 
 2. Add one key per caller (a person, CI, an automation host), with a
@@ -107,11 +108,12 @@ else is refused before a shell or sudo is involved.
 
 `gantry-run` refuses to run when:
 
-* the project name is not a plain name, or `/etc/gantry/<name>` does not
-  exist;
-* `/etc/gantry/<name>` is a symlink (a project kept next to its data) that
-  is not owned by root, or whose target, or any directory above the target,
-  is not owned by root or is writable by a group or others;
+* the project name is not a plain name, or it is not found exactly once in
+  the directories listed in `/etc/gantry/project-dirs` (such as
+  `/etc/gantry/<name>` or `/mnt/<storage>/<name>`; symlinks are not
+  followed);
+* `/etc/gantry/project-dirs`, or any directory above the project, is not
+  owned by root or is writable by a group or others;
 * `/etc/gantry` or the project directory is not owned by root, or is
   writable by a group or others;
 * a file directly in the project directory (the Compose file, `.env`) is
@@ -159,8 +161,9 @@ change is not.
 |---|---|
 | `Permission denied (publickey)` | Key not in `/etc/gantry/remote/authorized_keys`, a `from=` that does not match, or `AllowUsers`/`AllowGroups` excludes `gantry`. Check `journalctl -u ssh`. |
 | `sudo: a password is required` | `/etc/sudoers.d/gantry` is missing or does not validate: `sudo visudo -cf /etc/sudoers.d/gantry`. |
-| `gantry-run: no such project` | No directory `/etc/gantry/<name>`, or a symlink there points at nothing. |
-| `... (above the project) is not owned by root ...` | A symlinked project sits under a directory others can change. On NFS this is usually a squashed export: root's files show up as `nobody`. |
+| `gantry-run: config: no installed project ...` | No directory of that name in the directories listed in `/etc/gantry/project-dirs`. |
+| `... is installed more than once ...` | The same name exists in two project directories. Keep one. |
+| `... (above the project) is not owned by root ...` | The project sits under a directory others can change. On NFS this is usually a squashed export: root's files show up as `nobody`. |
 | `... is not owned by root or is writable by a group or others` | Fix the path named: `sudo chown root:root <path>` and `sudo chmod go-w <path>`. Do not `chown -R` the project, which would break container data directories. |
 | `... is not available remotely` | By design; see section 3. |
 | `PTY allocation request failed` | Harmless. The account never gets a TTY; the command still runs. |

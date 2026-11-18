@@ -1,0 +1,8 @@
+# Where Gantry looks for installed projects, one parent directory per line.
+# A project named NAME is the directory <parent>/NAME, found by
+# `gantry --installed NAME`, gantry@NAME.service and remote control.
+# `*` and `?` match within one path component. A name found in more than
+# one place is refused. Keep this file owned by root and not writable by
+# others: remote control refuses to run otherwise.
+/etc/gantry
+/mnt/*
