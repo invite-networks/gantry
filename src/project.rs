@@ -47,7 +47,6 @@ pub struct Project {
     /// Directory relative paths in the compose file resolve against.
     pub dir: PathBuf,
     pub runtime: RuntimeKind,
-    pub networks: IndexMap<String, Network>,
     pub pods: IndexMap<String, Pod>,
     pub services: IndexMap<String, Service>,
     pub volumes: IndexMap<String, Volume>,
@@ -83,17 +82,6 @@ impl Project {
     }
 }
 
-/// A layer 2 network the pods attach to directly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Network {
-    pub name: String,
-    pub driver: NetDriver,
-    /// Host interface the macvlan or ipvlan link hangs off.
-    pub parent: String,
-    pub subnets: Vec<Subnet>,
-    pub mtu: Option<u32>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase", tag = "type", content = "mode")]
 pub enum NetDriver {
@@ -118,12 +106,6 @@ pub enum IpvlanMode {
     L3s,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Subnet {
-    pub cidr: IpNet,
-    pub gateway: Option<IpAddr>,
-}
-
 /// A pod: one set of namespaces created by gantry, shared by every
 /// service in it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,31 +123,33 @@ pub struct Pod {
     pub sysctls: IndexMap<String, String>,
     pub ipv6: bool,
     pub firewall: Option<Firewall>,
-    /// True when the pod was created implicitly for a service without `pod:`.
+    /// True for the loopback-only pod of a `network_mode: none` service.
     pub implicit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
-    pub network: String,
     /// Interface name inside the pod (eth0, eth1, ...).
     pub ifname: String,
+    /// Host interface the macvlan or ipvlan link hangs off.
+    pub parent: String,
+    pub driver: NetDriver,
     pub addressing: Addressing,
     pub mac: Option<[u8; 6]>,
     pub default_route: bool,
-    /// Gateway override for this attachment.
+    /// IPv4 gateway: as written, or the first host of the address's subnet.
     pub gateway: Option<IpAddr>,
+    /// IPv6 gateway as written; without one, router advertisements decide.
+    pub gateway6: Option<IpAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Addressing {
-    /// Static addresses with prefix lengths.
+    /// Static addresses with prefix lengths (one IPv4, optionally one IPv6).
     Static(Vec<IpNet>),
     /// DHCPv4 (plus SLAAC for IPv6 if the network offers it).
     Dhcp,
-    /// No IPv4 address; only link local and SLAAC.
-    None,
 }
 
 /// The firewall applied inside a pod's network namespace.
@@ -173,7 +157,9 @@ pub enum Addressing {
 pub struct Firewall {
     pub input_policy: Action,
     pub output_policy: Action,
-    pub allow_ping: bool,
+    /// Add the default rules: any ICMP accepted before the pod's own rules,
+    /// and the pod's own subnets rejected after them.
+    pub defaults: bool,
     pub log_dropped: bool,
     pub input: Vec<Rule>,
     pub output: Vec<Rule>,
@@ -242,7 +228,8 @@ pub enum Peer {
     Cidr(IpNet),
     Pod(String),
     Service(String),
-    Network(String),
+    /// The subnets of the pod's own addresses (static or leased).
+    Subnet,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

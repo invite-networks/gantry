@@ -35,6 +35,6 @@ jobs:
       - run: sudo gantry setup docker && sudo gantry setup podman
       - run: sudo tests/integration/dhcp-lab.sh up
       - run: >
-          sudo GT_PARENT=gtdhcp0 GT_SUBNET=10.99.0.0/24 GT_GATEWAY=10.99.0.1
+          sudo GT_PARENT=gtdhcp0 GT_PREFIX=24 GT_GATEWAY=10.99.0.1
           GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13
           tests/integration/run.sh docker podman dhcp

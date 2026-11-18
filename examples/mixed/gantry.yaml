@@ -1,28 +1,20 @@
 # One pod, three engines sharing its namespaces. nginx runs under Docker,
 # the checker under Podman and the reporter under kiri (patched, see
 # contrib/kiri). They share one hostname and talk over loopback because
-# they live in one pod. The others start once nginx answers.
+# they live in one pod. The others start once nginx answers. The firewall
+# rule lets the lab and the pod's own subnet reach port 80; the default
+# policy rejects every other port from the subnet.
 name: mixed
-
-networks:
-  lan:
-    driver: macvlan
-    driver_opts:
-      parent: ${LAN_PARENT:-vlan4}
-      mode: bridge
-    ipam:
-      config:
-        - subnet: 192.0.2.216/29
-          gateway: 192.0.2.222
 
 pods:
   app:
-    networks:
-      lan:
-        ipv4_address: 192.0.2.217
+    network:
+      - parent: ${LAN_PARENT:-vlan4}
+        address: 192.0.2.217/29
+        gateway: 192.0.2.222
     firewall:
       input:
-        - { proto: tcp, port: 80, from: [198.51.100.0/24, network:lan] }
+        - { proto: tcp, port: 80, from: [198.51.100.0/24, subnet] }
 
 services:
   web:

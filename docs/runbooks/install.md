@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.2.x with the Docker Engine API engine layer |
+| Applies to | Gantry 0.3.x with the Docker Engine API engine layer |
 | Validation | On the Debian 13 reference host (2026-11-16): the .deb installed with `apt`, and a pod with Docker, Podman and kiri services ran through the API engine layer. The .deb was built locally, not fetched from the apt repository. Steps 3 to 5 were done on that host before the .deb existed. |
 
 ## 1. Prerequisites

@@ -59,40 +59,10 @@ pub struct File {
     pub services: IndexMap<String, Service>,
     #[serde(default)]
     pub pods: IndexMap<String, Option<Pod>>,
-    #[serde(default)]
-    pub networks: IndexMap<String, Option<Network>>,
+    /// Not supported: networks are defined on each pod. Kept to say so.
+    pub networks: Option<Value>,
     #[serde(default)]
     pub volumes: IndexMap<String, Option<VolumeDef>>,
-    #[serde(flatten)]
-    pub extra: IndexMap<String, Value>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct Network {
-    pub driver: Option<String>,
-    /// Extension: shorthand for `driver_opts.parent`.
-    pub parent: Option<String>,
-    /// Extension: shorthand for `driver_opts.mode`.
-    pub mode: Option<String>,
-    #[serde(default)]
-    pub driver_opts: IndexMap<String, Scalar>,
-    pub ipam: Option<Ipam>,
-    pub mtu: Option<u32>,
-    #[serde(flatten)]
-    pub extra: IndexMap<String, Value>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct Ipam {
-    pub driver: Option<String>,
-    #[serde(default)]
-    pub config: Vec<IpamConfig>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct IpamConfig {
-    pub subnet: String,
-    pub gateway: Option<String>,
     #[serde(flatten)]
     pub extra: IndexMap<String, Value>,
 }
@@ -109,45 +79,28 @@ pub struct VolumeDef {
     pub extra: IndexMap<String, Value>,
 }
 
-/// A network attachment, for pods and for services that get an implicit pod.
+/// One interface of a pod: a macvlan or ipvlan link on a host interface.
 #[derive(Debug, Default, Clone, Deserialize)]
-pub struct Attachment {
-    pub ipv4_address: Option<String>,
-    pub ipv6_address: Option<String>,
-    /// Extension: a list of addresses with prefix (`10.0.0.5/24`).
-    #[serde(default)]
-    pub addresses: Vec<String>,
-    /// Extension: lease an IPv4 address with DHCP.
-    #[serde(default)]
-    pub dhcp: bool,
-    pub mac_address: Option<String>,
-    /// Extension: install the default route through this network.
-    pub default_route: Option<bool>,
-    /// Extension: override the subnet gateway.
+#[serde(deny_unknown_fields)]
+pub struct PodNetwork {
+    /// Host interface the link hangs off, such as `vlan4`.
+    pub parent: Option<String>,
+    /// `10.10.10.10/24`, or `dhcp`.
+    pub address: Option<String>,
+    /// `macvlan` (default) or `ipvlan`.
+    pub driver: Option<String>,
+    /// IPv4 gateway. Default: the first host of the address's subnet.
     pub gateway: Option<String>,
-    /// Extension: interface name inside the pod.
+    /// Optional static IPv6 address with prefix.
+    pub address6: Option<String>,
+    /// IPv6 gateway. Default: from router advertisements.
+    pub gateway6: Option<String>,
+    /// Interface name inside the pod. Default: eth0, eth1, ... in order.
     pub interface: Option<String>,
-    #[serde(flatten)]
-    pub extra: IndexMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum Attachments {
-    List(Vec<String>),
-    Map(IndexMap<String, Option<Attachment>>),
-}
-
-impl Attachments {
-    pub fn into_pairs(self) -> Vec<(String, Attachment)> {
-        match self {
-            Attachments::List(v) => v.into_iter().map(|n| (n, Attachment::default())).collect(),
-            Attachments::Map(m) => m
-                .into_iter()
-                .map(|(k, v)| (k, v.unwrap_or_default()))
-                .collect(),
-        }
-    }
+    /// Install the default route through this interface. Default: the first.
+    pub default_route: Option<bool>,
+    /// macvlan only. Default: a stable MAC derived from the names.
+    pub mac_address: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -156,7 +109,10 @@ pub struct Pod {
     pub domainname: Option<String>,
     /// Namespaces shared besides net: `uts`, `ipc`. Default both.
     pub share: Option<Vec<String>>,
-    pub networks: Option<Attachments>,
+    /// The pod's interfaces.
+    pub network: Option<Vec<PodNetwork>>,
+    /// Not supported: replaced by `network`. Kept to say so.
+    pub networks: Option<Value>,
     pub dns: Option<StringOrList>,
     pub dns_search: Option<StringOrList>,
     pub dns_opt: Option<Vec<String>>,
@@ -174,7 +130,9 @@ pub struct Pod {
 #[serde(deny_unknown_fields)]
 pub struct Firewall {
     pub policy: Option<Policy>,
-    pub allow_ping: Option<bool>,
+    /// Add the default rules (any ICMP, reject the pod's own subnet).
+    /// Default true.
+    pub defaults: Option<bool>,
     #[serde(default)]
     pub log_dropped: bool,
     #[serde(default)]
@@ -358,7 +316,8 @@ pub struct Service {
     // Pod level settings a service may carry when it has no `pod:`.
     pub hostname: Option<String>,
     pub domainname: Option<String>,
-    pub networks: Option<Attachments>,
+    /// Not supported: networks belong to the pod. Kept to say so.
+    pub networks: Option<Value>,
     pub network_mode: Option<String>,
     pub mac_address: Option<String>,
     pub dns: Option<StringOrList>,

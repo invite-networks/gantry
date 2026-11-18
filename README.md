@@ -48,7 +48,7 @@ way `ip netns add` does, and every container joins them by path.
 
 ## Status
 
-Version 0.2.0, rapid development. Tested on Debian 13 (kernel 6.12) with
+Version 0.3.0, rapid development. Tested on Debian 13 (kernel 6.12) with
 Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 
 ## Install
@@ -99,32 +99,25 @@ For kiri, see `contrib/kiri`.
 # gantry.yaml
 name: demo
 
-networks:
-  lan:
-    driver: macvlan
-    driver_opts: { parent: eth0 }
-    ipam:
-      config:
-        - subnet: 192.168.10.0/24
-          gateway: 192.168.10.1
-
 pods:
   web:
-    networks:
-      lan: { ipv4_address: 192.168.10.50 }
-    firewall:
-      input:
-        - { proto: tcp, ports: [80, 443] }
+    network:
+      - parent: eth0                 # host interface
+        address: 192.168.10.50/24    # gateway defaults to 192.168.10.1
 
 services:
   nginx:
     image: nginx:alpine
-    pod: web
   app:
     build: ./app
-    pod: web
     runtime: podman
 ```
+
+With one pod, services join it without `pod:`. The pod gets the default
+firewall: any ICMP is accepted, everything else from `192.168.10.0/24` is
+rejected, and other traffic is left to your router's firewall. Add `input`
+rules to let neighbors in, or `defaults: false` to write the whole policy
+yourself. See [the file format](docs/compose-spec.md).
 
 ```sh
 sudo gantry up -d
@@ -167,8 +160,8 @@ Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
    `/run/netns/gt-<project>-<pod>` (so `ip netns` sees it), plus UTS and IPC
    namespaces under `/run/gantry/<project>/pods/<pod>/`. It sets the hostname
    inside the UTS namespace.
-2. **Links.** For every network it creates a macvlan or ipvlan link on the
-   parent directly inside the pod namespace, renames it to `eth0`, `eth1`,
+2. **Links.** For every entry in the pod's `network` list it creates a
+   macvlan or ipvlan link on the parent directly inside the pod namespace, renames it to `eth0`, `eth1`,
    ..., assigns static addresses and the default route, and sends
    gratuitous ARP. DHCP networks get a small agent process
    (`gantry internal dhcp-agent`) that lives in the pod namespace, holds the
@@ -176,8 +169,8 @@ Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
    the agent rewrites every pod's hosts file and firewall.
 3. **Shared files.** `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`
    are written to the pod directory and bind mounted into every container.
-4. **Firewall.** The pod's rules are rendered into an `inet gantry` table
-   and loaded with `nft` inside the pod namespace.
+4. **Firewall.** The default policy and the pod's rules are rendered into
+   an `inet gantry` table and loaded with `nft` inside the pod namespace.
 5. **Containers.** Each service is created through its engine's API and
    joined to the pod's namespaces by path. Labels (`io.gantry.*`) record the
    project, service, pod instance and a config hash, so a second `up` only

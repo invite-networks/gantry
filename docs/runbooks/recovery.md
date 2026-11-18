@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.2.x with the Docker Engine API engine layer |
+| Applies to | Gantry 0.3.x with the Docker Engine API engine layer |
 | Validation | Section 1 matches behavior tested on the reference host with the earlier CLI engine. Sections 2 to 4 are planned, not yet executed. |
 
 Gantry keeps all pod state in tmpfs (`/run/gantry`, `/run/netns`) and

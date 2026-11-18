@@ -1,13 +1,9 @@
 name: dhcplab
 runtime: ${GANTRY_RUNTIME:-docker}
-networks:
-  lab:
-    driver: macvlan
-    parent: ${GT_DHCP_PARENT:-gtdhcp0}
 pods:
   client:
-    networks:
-      lab: { dhcp: true }
+    network:
+      - { parent: "${GT_DHCP_PARENT:-gtdhcp0}", address: dhcp }
     firewall:
       input:
         - { proto: tcp, port: 8080 }

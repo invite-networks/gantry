@@ -30,7 +30,16 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
         .attachments
         .iter()
         .any(|a| a.addressing == Addressing::Dhcp);
-    let mut input = fw.input.clone();
+    let mut input = Vec::new();
+    if fw.defaults {
+        input.push(default_rule(
+            Action::Accept,
+            vec![Proto::Icmp, Proto::Icmpv6],
+            vec![],
+            "default: any ICMP",
+        ));
+    }
+    input.extend(fw.input.iter().cloned());
     let mut output = fw.output.clone();
 
     // `ports:` open to everyone, `expose:` to the project's other pods.
@@ -55,6 +64,15 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
                 ));
             }
         }
+    }
+    // Last, so the pod's own rules and ports can still let neighbors in.
+    if fw.defaults {
+        input.push(default_rule(
+            Action::Reject,
+            vec![],
+            vec![Peer::Subnet],
+            "default: reject local subnet",
+        ));
     }
     // Output rules toward a closed policy still need answers to come back,
     // which conntrack handles; nothing else is implied.
@@ -87,10 +105,6 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
         w,
         "    icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept"
     );
-    if fw.allow_ping {
-        let _ = writeln!(w, "    icmp type echo-request accept");
-        let _ = writeln!(w, "    icmpv6 type echo-request accept");
-    }
     if dhcp {
         let _ = writeln!(w, "    udp sport 67 udp dport 68 accept comment \"dhcp\"");
     }
@@ -166,6 +180,36 @@ fn log_prefix(pod: &Pod, dir: &str) -> String {
     format!("gantry {name} {dir} drop: ")
 }
 
+fn default_rule(action: Action, protocols: Vec<Proto>, peers: Vec<Peer>, comment: &str) -> Rule {
+    Rule {
+        action,
+        protocols,
+        ports: vec![],
+        peers,
+        interface: None,
+        log: false,
+        limit: None,
+        comment: Some(comment.into()),
+    }
+}
+
+/// The subnets of the pod's own addresses: static ones from the project,
+/// leased ones from the address book.
+fn own_subnets(pod: &Pod, book: &dyn AddressBook) -> Vec<IpNet> {
+    let mut out: Vec<IpNet> = Vec::new();
+    let statics = pod.attachments.iter().flat_map(|a| match &a.addressing {
+        Addressing::Static(v) => v.clone(),
+        Addressing::Dhcp => vec![],
+    });
+    for n in statics.chain(book.pod_addresses(&pod.name)) {
+        let n = n.trunc();
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
+}
+
 fn port_rule(
     proto: Proto,
     range: crate::project::PortRange,
@@ -208,14 +252,9 @@ fn rule_lines(
                     .ok_or_else(|| format!("unknown service {s}"))?;
                 host_routes(book.pod_addresses(&svc.pod))
             }
-            Peer::Network(n) => project
-                .networks
-                .get(n)
-                .ok_or_else(|| format!("unknown network {n}"))?
-                .subnets
-                .iter()
-                .map(|s| s.cidr)
-                .collect(),
+            // Empty until a DHCP pod has its lease. The rule is skipped until
+            // then, and the DHCP agent reloads the firewall once it has one.
+            Peer::Subnet => own_subnets(pod, book),
         };
         for n in nets {
             match n {
@@ -336,7 +375,7 @@ fn describe_peers(peers: &[&Peer]) -> String {
             Peer::Cidr(n) => n.to_string(),
             Peer::Pod(x) => format!("pod:{x}"),
             Peer::Service(x) => format!("service:{x}"),
-            Peer::Network(x) => format!("network:{x}"),
+            Peer::Subnet => "subnet".to_string(),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -383,40 +422,41 @@ mod tests {
 
     const BASE: &str = r#"
 name: demo
-networks:
-  lan:
-    driver: macvlan
-    driver_opts: { parent: eth9 }
-    ipam:
-      config: [{ subnet: 192.0.2.0/24, gateway: 192.0.2.1 }]
 pods:
   web:
-    networks: { lan: { ipv4_address: 192.0.2.10 } }
+    network: [{ parent: eth9, address: 192.0.2.10/24 }]
     firewall:
+      policy: { input: drop }
       log_dropped: true
       input:
         - { proto: tcp, ports: [80, 443] }
         - { proto: tcp, port: 9000, from: [pod:db, "2001:db8::/32"] }
-        - { proto: [tcp, udp], port: "5000-5010", from: network:lan, action: drop, limit: 5/second }
+        - { proto: [tcp, udp], port: "5000-5010", from: subnet, action: drop, limit: 5/second }
       output:
         - { to: 198.51.100.0/24, action: reject }
   db:
-    networks: { lan: { dhcp: true } }
+    network: [{ parent: eth9, address: dhcp }]
 services:
   nginx: { image: nginx, pod: web, ports: ["8080:8080"] }
   pg: { image: postgres, pod: db, expose: ["5432"] }
 "#;
 
+    fn book(pod: &str) -> Vec<IpNet> {
+        match pod {
+            "db" => vec!["192.0.2.50/24".parse().unwrap()],
+            "web" => vec!["192.0.2.10/24".parse().unwrap()],
+            _ => vec![],
+        }
+    }
+
+    fn pos(rs: &str, needle: &str) -> usize {
+        rs.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in {rs}"))
+    }
+
     #[test]
     fn renders_rules() {
         let p = project(BASE);
-        let book = |pod: &str| -> Vec<IpNet> {
-            match pod {
-                "db" => vec!["192.0.2.50/24".parse().unwrap()],
-                "web" => vec!["192.0.2.10/24".parse().unwrap()],
-                _ => vec![],
-            }
-        };
         let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
         assert!(rs.contains("policy drop;"), "{rs}");
         assert!(rs.contains("iif \"lo\" accept"));
@@ -440,17 +480,55 @@ services:
         );
         assert!(rs.contains("log prefix \"gantry web in drop: \""));
         assert!(!rs.contains("dhcp"));
-        // The db pod has no firewall section, so nothing is rendered.
-        assert!(render(&p, &p.pods["db"], &book).unwrap().is_none());
+    }
+
+    #[test]
+    fn defaults_wrap_the_pods_rules() {
+        let p = project(BASE);
+        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        let icmp = pos(
+            &rs,
+            "meta l4proto { icmp, ipv6-icmp } accept comment \"default: any ICMP\"",
+        );
+        let own = pos(&rs, "tcp dport { 80, 443 } accept");
+        let ports = pos(&rs, "ports of service nginx");
+        let reject = pos(
+            &rs,
+            "ip saddr 192.0.2.0/24 reject with icmpx admin-prohibited comment \"default: reject local subnet\"",
+        );
+        assert!(icmp < own && own < ports && ports < reject, "{rs}");
+    }
+
+    #[test]
+    fn pod_without_firewall_section_gets_the_default_policy() {
+        let p = project(BASE);
+        let rs = render(&p, &p.pods["db"], &book).unwrap().unwrap();
+        assert!(
+            rs.contains("type filter hook input priority filter; policy accept;"),
+            "{rs}"
+        );
+        assert!(rs.contains("comment \"default: any ICMP\""), "{rs}");
+        // The subnet comes from the DHCP lease.
+        assert!(
+            rs.contains("ip saddr 192.0.2.0/24 reject with icmpx admin-prohibited comment \"default: reject local subnet\""),
+            "{rs}"
+        );
+    }
+
+    #[test]
+    fn defaults_can_be_turned_off() {
+        let yaml = BASE.replace(
+            "      log_dropped: true",
+            "      log_dropped: true\n      defaults: false",
+        );
+        let p = project(&yaml);
+        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        assert!(!rs.contains("default:"), "{rs}");
     }
 
     #[test]
     fn dhcp_and_expose() {
-        let yaml = BASE.replace(
-            "  db:\n    networks: { lan: { dhcp: true } }",
-            "  db:\n    networks: { lan: { dhcp: true } }\n    firewall: {}",
-        );
-        let p = project(&yaml);
+        let p = project(BASE);
         let book = |pod: &str| -> Vec<IpNet> {
             if pod == "web" {
                 vec!["192.0.2.10/24".parse().unwrap()]
@@ -464,6 +542,11 @@ services:
             rs.contains(
                 "ip saddr 192.0.2.10/32 tcp dport 5432 accept comment \"expose of service pg\""
             ),
+            "{rs}"
+        );
+        // No lease yet: the subnet reject waits for one instead of failing.
+        assert!(
+            rs.contains("# skipped: no addresses known yet for subnet"),
             "{rs}"
         );
     }
@@ -488,5 +571,7 @@ services:
         // The db pod's address is unknown, so only the IPv6 peer remains.
         assert!(!rs.contains("192.0.2.50"));
         assert!(rs.contains("ip6 saddr 2001:db8::/32 tcp dport 9000 accept"));
+        // The web pod's subnet comes from its static address.
+        assert!(rs.contains("ip saddr 192.0.2.0/24 reject"), "{rs}");
     }
 }

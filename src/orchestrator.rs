@@ -794,7 +794,7 @@ pub fn describe_pod(st: &state::PodState) -> String {
     let mut parts = Vec::new();
     for i in &st.interfaces {
         let addrs: Vec<String> = i.addresses.iter().map(ToString::to_string).collect();
-        let mut s = format!("{} on {}", i.ifname, i.network);
+        let mut s = format!("{} on {}", i.ifname, i.parent);
         if i.dhcp {
             let lease =
                 pod::dhcp::LeaseFile::load(&state::pod_dir(&st.project, &st.name), &i.ifname)

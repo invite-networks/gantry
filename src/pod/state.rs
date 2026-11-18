@@ -40,7 +40,10 @@ pub fn netns_path(project: &str, pod: &str) -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InterfaceState {
     pub ifname: String,
-    pub network: String,
+    /// Host interface the link hangs off. Gantry 0.2 recorded the network
+    /// name here.
+    #[serde(alias = "network")]
+    pub parent: String,
     pub mac: Option<String>,
     pub addresses: Vec<IpNet>,
     pub gateway: Option<IpAddr>,

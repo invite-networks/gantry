@@ -32,18 +32,13 @@ pub enum Ensured {
 
 /// Hash of everything that shapes a pod's namespaces. A change means the
 /// pod has to be recreated.
-pub fn config_hash(project: &Project, pod: &Pod) -> String {
-    let nets: Vec<_> = pod
-        .attachments
-        .iter()
-        .filter_map(|a| project.networks.get(&a.network))
-        .collect();
+pub fn config_hash(_project: &Project, pod: &Pod) -> String {
     let mut shape = pod.clone();
     // The firewall and hosts entries are applied live; they do not force a
     // recreate.
     shape.firewall = None;
     shape.extra_hosts.clear();
-    let data = serde_json::to_vec(&(&shape, &nets)).unwrap_or_default();
+    let data = serde_json::to_vec(&shape).unwrap_or_default();
     crate::util::hash_hex(&data)
 }
 
@@ -150,18 +145,14 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
 
     let mut interfaces = Vec::new();
     for att in &pod.attachments {
-        let net = project
-            .networks
-            .get(&att.network)
-            .ok_or_else(|| Error::network(format!("unknown network {}", att.network)))?;
         let tmp = format!("gt{}", crate::util::random_id(5));
-        let mac = match net.driver {
+        let mac = match att.driver {
             NetDriver::Macvlan(_) => Some(att.mac.unwrap_or_else(|| {
-                link::stable_mac(&format!("{}/{}/{}", project.name, pod.name, att.network))
+                link::stable_mac(&format!("{}/{}/{}", project.name, pod.name, att.ifname))
             })),
             NetDriver::Ipvlan(_) => None,
         };
-        host.create_sublink(&net.parent, net.driver, &tmp, mac, net.mtu, &netns)
+        host.create_sublink(&att.parent, att.driver, &tmp, mac, None, &netns)
             .await?;
         let idx = inner.require_index(&tmp).await?;
         if att.addressing == Addressing::Dhcp {
@@ -184,15 +175,7 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
                 addresses.push(*a);
             }
             if att.default_route {
-                let gw4 = att
-                    .gateway
-                    .filter(IpAddr::is_ipv4)
-                    .or_else(|| subnet_gateway(project, &att.network, addrs, true));
-                let gw6 = att
-                    .gateway
-                    .filter(IpAddr::is_ipv6)
-                    .or_else(|| subnet_gateway(project, &att.network, addrs, false));
-                for gw in [gw4, gw6].into_iter().flatten() {
+                for gw in [att.gateway, att.gateway6].into_iter().flatten() {
                     inner.set_default_route(idx, gw).await?;
                     gateway.get_or_insert(gw);
                 }
@@ -221,7 +204,7 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         }
         interfaces.push(InterfaceState {
             ifname: att.ifname.clone(),
-            network: att.network.clone(),
+            parent: att.parent.clone(),
             mac: mac.map(|m| link::format_mac(&m)),
             addresses,
             gateway,
@@ -296,19 +279,6 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         wait_for_lease(&dir, &att.ifname, Duration::from_secs(30)).await?;
     }
     Ok(st)
-}
-
-fn subnet_gateway(project: &Project, network: &str, addrs: &[IpNet], v4: bool) -> Option<IpAddr> {
-    let net = project.networks.get(network)?;
-    addrs
-        .iter()
-        .filter(|a| a.addr().is_ipv4() == v4)
-        .find_map(|a| {
-            net.subnets
-                .iter()
-                .find(|s| s.cidr.contains(&a.addr()))
-                .and_then(|s| s.gateway)
-        })
 }
 
 fn set_domainname(d: &str) -> Result<()> {

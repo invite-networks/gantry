@@ -2,7 +2,7 @@
 # Live end to end tests. Needs root, a built gantry on PATH, the engines
 # under test, and a LAN segment with three free addresses:
 #
-#   sudo GT_PARENT=vlan4 GT_SUBNET=192.0.2.216/29 GT_GATEWAY=192.0.2.222 \
+#   sudo GT_PARENT=vlan4 GT_PREFIX=29 GT_GATEWAY=192.0.2.222 \
 #        GT_IP1=192.0.2.217 GT_IP2=192.0.2.218 GT_IP3=192.0.2.219 \
 #        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove] [ipv6]
 #
@@ -51,6 +51,7 @@ e2e() {
   check_not "firewall blocks data -> web:8080" sh -c "$K exec -T redis sh -c 'nc -z -w 3 server 8080'"
   check "default route via gateway" sh -c "$K pod exec web ip route | grep -q 'default via $GT_GATEWAY'"
   check "nft table loaded in pod" sh -c "$K pod exec data nft list table inet gantry"
+  check "pod without firewall: section gets the defaults" sh -c "$K pod exec other nft list table inet gantry | grep -q 'default: reject local subnet'"
   check "host has no gantry table" sh -c "! nft list table inet gantry"
   check "ps shows redis healthy" sh -c "$K ps | grep redis | grep -q healthy"
   if [ "$rt" = docker ]; then

@@ -378,11 +378,9 @@ mod tests {
                 r#"
 name: demo
 runtime: {runtime}
-networks:
-  lan: {{ driver: macvlan, parent: eth9, ipam: {{ config: [{{ subnet: 192.0.2.0/24, gateway: 192.0.2.1 }}] }} }}
 pods:
   web:
-    networks: {{ lan: {{ ipv4_address: 192.0.2.10 }} }}
+    network: [{{ parent: eth9, address: 192.0.2.10/24 }}]
 services:
   app:
     image: alpine:3

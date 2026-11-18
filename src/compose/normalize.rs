@@ -5,8 +5,8 @@ use super::units::{parse_bytes, parse_duration};
 use crate::errors::{Error, Result};
 use crate::project::*;
 use indexmap::IndexMap;
-use ipnet::IpNet;
-use std::net::IpAddr;
+use ipnet::{IpNet, Ipv4Net};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 pub struct Ctx<'a> {
@@ -53,11 +53,10 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         (None, None) => RuntimeKind::Docker,
     };
 
-    // Networks.
-    let mut networks = IndexMap::new();
-    for (net_name, n) in f.networks {
-        let n = network(&net_name, n.unwrap_or_default(), &mut warnings)?;
-        networks.insert(net_name, n);
+    if f.networks.is_some() {
+        return Err(Error::config(
+            "top-level networks: is not supported; define each pod's interfaces under pods.<name>.network (a list of parent and address)",
+        ));
     }
 
     // Volumes.
@@ -113,7 +112,12 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
                 )));
             }
         }
-        let attachments = attachments(&pod_name, p.networks, &networks, None)?;
+        if p.networks.is_some() {
+            return Err(Error::config(format!(
+                "pod {pod_name}: networks: was replaced by network:, a list of interfaces with parent and address"
+            )));
+        }
+        let attachments = pod_networks(&pod_name, p.network.unwrap_or_default())?;
         let pod = Pod {
             hostname: p.hostname.unwrap_or_else(|| pod_name.clone()),
             domainname: p.domainname,
@@ -129,7 +133,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
             extra_hosts: extra_hosts(p.extra_hosts, &format!("pod {pod_name}"))?,
             sysctls: list_or_map(p.sysctls, ctx, false),
             ipv6: p.ipv6.unwrap_or(true),
-            firewall: p.firewall.map(|fw| firewall(&pod_name, fw)).transpose()?,
+            firewall: Some(firewall(&pod_name, p.firewall.unwrap_or_default())?),
             implicit: false,
             name: pod_name.clone(),
         };
@@ -159,107 +163,82 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         if let Some(mode) = &s.network_mode {
             service_mode.insert(svc_name.clone(), mode.clone());
         }
-        let explicit_pod = s.pod.clone();
-        let pod_name = match &explicit_pod {
+        // Keys that shape the pod, so they cannot be set on a service.
+        let pod_keys = [
+            (s.networks.is_some(), "networks"),
+            (s.hostname.is_some(), "hostname"),
+            (s.domainname.is_some(), "domainname"),
+            (s.mac_address.is_some(), "mac_address"),
+            (s.dns.is_some(), "dns"),
+            (s.dns_search.is_some(), "dns_search"),
+            (s.dns_opt.is_some(), "dns_opt"),
+            (s.extra_hosts.is_some(), "extra_hosts"),
+            (s.firewall.is_some(), "firewall"),
+            (s.ipc.is_some(), "ipc"),
+        ];
+        let explicit_pods: Vec<String> = pods
+            .iter()
+            .filter(|(_, p)| !p.implicit)
+            .map(|(n, _)| n.clone())
+            .collect();
+        let target = match (&s.pod, s.network_mode.as_deref()) {
+            (Some(p), None) => Some(p.clone()),
+            (Some(_), Some(_)) => {
+                return Err(Error::config(format!(
+                    "service {svc_name}: set pod: or network_mode:, not both"
+                )));
+            }
+            (None, Some(m)) if m.starts_with("service:") || m.starts_with("container:") => {
+                // Resolved below, once every service has a pod.
+                None
+            }
+            (None, Some("none")) => {
+                if pods.contains_key(&svc_name) {
+                    return Err(Error::config(format!(
+                        "service {svc_name}: a pod with the same name exists; network_mode: none needs its own pod"
+                    )));
+                }
+                pods.insert(svc_name.clone(), loopback_pod(&svc_name));
+                None
+            }
+            (None, Some(m)) => {
+                return Err(Error::config(format!(
+                    "service {svc_name}: network_mode {m:?} is not supported; gantry always runs services in a pod"
+                )));
+            }
+            (None, None) => match explicit_pods.as_slice() {
+                [only] => Some(only.clone()),
+                [] => {
+                    return Err(Error::config(format!(
+                        "service {svc_name}: no pod to run in; define one under pods: with its network"
+                    )));
+                }
+                _ => {
+                    return Err(Error::config(format!(
+                        "service {svc_name}: set pod: (the project has more than one pod)"
+                    )));
+                }
+            },
+        };
+        let pod_name = match target {
             Some(p) => {
-                if !pods.contains_key(p) {
+                if !pods.contains_key(&p) {
                     return Err(Error::config(format!(
                         "service {svc_name}: pod {p:?} is not defined under pods:"
                     )));
                 }
-                for (set, key) in [
-                    (s.networks.is_some(), "networks"),
-                    (s.hostname.is_some(), "hostname"),
-                    (s.domainname.is_some(), "domainname"),
-                    (s.mac_address.is_some(), "mac_address"),
-                    (s.dns.is_some(), "dns"),
-                    (s.dns_search.is_some(), "dns_search"),
-                    (s.dns_opt.is_some(), "dns_opt"),
-                    (s.extra_hosts.is_some(), "extra_hosts"),
-                    (s.firewall.is_some(), "firewall"),
-                    (s.network_mode.is_some(), "network_mode"),
-                    (s.ipc.is_some(), "ipc"),
-                ] {
-                    if set {
-                        return Err(Error::config(format!(
-                            "service {svc_name}: {key} belongs to the pod; set it under pods.{p}"
-                        )));
-                    }
-                }
-                p.clone()
+                p
             }
-            None => {
-                let mode = s.network_mode.as_deref();
-                match mode {
-                    Some(m) if m.starts_with("service:") || m.starts_with("container:") => {
-                        // Resolved below, once every service has a pod.
-                        String::new()
-                    }
-                    Some("none") | None => {
-                        if pods.contains_key(&svc_name) {
-                            return Err(Error::config(format!(
-                                "service {svc_name}: a pod with the same name exists; add `pod: {svc_name}` to the service"
-                            )));
-                        }
-                        let nets = if mode == Some("none") {
-                            None
-                        } else {
-                            s.networks.clone()
-                        };
-                        let mut atts =
-                            attachments(&svc_name, nets, &networks, s.mac_address.as_deref())?;
-                        if mode.is_none()
-                            && atts.is_empty()
-                            && s.networks.is_none()
-                            && networks.len() == 1
-                        {
-                            warnings.push(format!(
-                                "service {svc_name} has no networks; its pod only has loopback (add networks: to attach it)"
-                            ));
-                        }
-                        atts.shrink_to_fit();
-                        let sysctls_all = list_or_map(s.sysctls.clone(), ctx, false);
-                        let pod = Pod {
-                            name: svc_name.clone(),
-                            hostname: s.hostname.clone().unwrap_or_else(|| svc_name.clone()),
-                            domainname: s.domainname.clone(),
-                            share_uts: true,
-                            share_ipc: true,
-                            attachments: atts,
-                            dns: ip_list(s.dns.clone(), &format!("service {svc_name}: dns"))?,
-                            dns_search: s
-                                .dns_search
-                                .clone()
-                                .map(raw::StringOrList::into_vec)
-                                .unwrap_or_default(),
-                            dns_options: s.dns_opt.clone().unwrap_or_default(),
-                            extra_hosts: extra_hosts(
-                                s.extra_hosts.clone(),
-                                &format!("service {svc_name}"),
-                            )?,
-                            sysctls: sysctls_all
-                                .into_iter()
-                                .filter(|(k, _)| k.starts_with("net."))
-                                .collect(),
-                            ipv6: true,
-                            firewall: s
-                                .firewall
-                                .clone()
-                                .map(|fw| firewall(&svc_name, fw))
-                                .transpose()?,
-                            implicit: true,
-                        };
-                        pods.insert(svc_name.clone(), pod);
-                        svc_name.clone()
-                    }
-                    Some(m) => {
-                        return Err(Error::config(format!(
-                            "service {svc_name}: network_mode {m:?} is not supported; gantry always runs services in a pod"
-                        )));
-                    }
-                }
-            }
+            None if s.network_mode.as_deref() == Some("none") => svc_name.clone(),
+            None => String::new(),
         };
+        for (set, key) in pod_keys {
+            if set {
+                return Err(Error::config(format!(
+                    "service {svc_name}: {key} belongs to the pod; set it under pods:"
+                )));
+            }
+        }
         let svc = service(
             &name,
             &svc_name,
@@ -327,7 +306,6 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
                     let ok = match peer {
                         Peer::Pod(p) => pods.contains_key(p),
                         Peer::Service(s) => services.contains_key(s),
-                        Peer::Network(n) => networks.contains_key(n),
                         _ => true,
                     };
                     if !ok {
@@ -366,11 +344,31 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         }
     }
 
+    // The kernel will not put macvlan and ipvlan links on one parent.
+    let mut parents: IndexMap<&str, (NetDriver, &str)> = IndexMap::new();
+    for pod in pods.values() {
+        for a in &pod.attachments {
+            match parents.get(a.parent.as_str()) {
+                Some((d, other))
+                    if std::mem::discriminant(d) != std::mem::discriminant(&a.driver) =>
+                {
+                    return Err(Error::config(format!(
+                        "pods {other} and {} use {} with different drivers; a parent carries macvlan or ipvlan links, not both",
+                        pod.name, a.parent
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    parents.insert(&a.parent, (a.driver, &pod.name));
+                }
+            }
+        }
+    }
+
     let mut project = Project {
         name,
         dir: ctx.project_dir.clone(),
         runtime,
-        networks,
         pods,
         services,
         volumes,
@@ -481,220 +479,182 @@ fn parse_runtime(s: &str, what: &str) -> Result<RuntimeKind> {
     })
 }
 
-fn network(name: &str, n: raw::Network, warnings: &mut Vec<String>) -> Result<Network> {
-    for key in n.extra.keys() {
-        match key.as_str() {
-            "external" | "name" | "labels" | "enable_ipv6" | "internal" | "attachable"
-            | "driver_opts" => warnings.push(format!("network {name}: ignoring {key:?}")),
-            k if k.starts_with("x-") => {}
-            k => return Err(Error::config(format!("network {name}: unknown key {k:?}"))),
-        }
-    }
-    if let Some(d) = n
-        .driver
-        .as_deref()
-        .filter(|d| !matches!(*d, "macvlan" | "ipvlan"))
-    {
-        return Err(Error::config(format!(
-            "network {name}: driver {d:?} is not supported; pods attach directly to the LAN with macvlan or ipvlan"
-        )));
-    }
-    let mut opts: IndexMap<String, String> = n
-        .driver_opts
-        .into_iter()
-        .map(|(k, v)| (k, v.into_string()))
-        .collect();
-    let parent = n
-        .parent
-        .or_else(|| opts.shift_remove("parent"))
-        .ok_or_else(|| {
-            Error::config(format!(
-                "network {name}: parent (host interface) is required"
-            ))
-        })?;
-    let mode = n
-        .mode
-        .or_else(|| opts.shift_remove("mode"))
-        .or_else(|| opts.shift_remove("macvlan_mode"))
-        .or_else(|| opts.shift_remove("ipvlan_mode"));
-    let mtu = match (n.mtu, opts.shift_remove("mtu")) {
-        (Some(m), _) => Some(m),
-        (None, Some(m)) => Some(
-            m.parse()
-                .map_err(|_| Error::config(format!("network {name}: invalid mtu {m:?}")))?,
-        ),
-        (None, None) => None,
-    };
-    for k in opts.keys() {
-        warnings.push(format!("network {name}: ignoring driver option {k:?}"));
-    }
-    let driver = match n.driver.as_deref().unwrap_or("macvlan") {
-        "macvlan" => NetDriver::Macvlan(match mode.as_deref().unwrap_or("bridge") {
-            "bridge" => MacvlanMode::Bridge,
-            "private" => MacvlanMode::Private,
-            "vepa" => MacvlanMode::Vepa,
-            "passthru" => MacvlanMode::Passthru,
-            m => {
-                return Err(Error::config(format!(
-                    "network {name}: macvlan mode {m:?} (bridge, private, vepa, passthru)"
-                )));
-            }
-        }),
-        "ipvlan" => NetDriver::Ipvlan(match mode.as_deref().unwrap_or("l2") {
-            "l2" => IpvlanMode::L2,
-            "l3" => IpvlanMode::L3,
-            "l3s" => IpvlanMode::L3s,
-            m => {
-                return Err(Error::config(format!(
-                    "network {name}: ipvlan mode {m:?} (l2, l3, l3s)"
-                )));
-            }
-        }),
-        d => {
-            return Err(Error::config(format!(
-                "network {name}: driver {d:?} is not supported; pods attach directly to the LAN with macvlan or ipvlan"
-            )));
-        }
-    };
-    let mut subnets = Vec::new();
-    for c in n.ipam.map(|i| i.config).unwrap_or_default() {
-        let cidr: IpNet = c
-            .subnet
-            .parse()
-            .map_err(|_| Error::config(format!("network {name}: invalid subnet {:?}", c.subnet)))?;
-        let gateway = c
-            .gateway
-            .as_deref()
-            .map(|g| {
-                g.parse::<IpAddr>()
-                    .map_err(|_| Error::config(format!("network {name}: invalid gateway {g:?}")))
-            })
-            .transpose()?;
-        if let Some(g) = gateway {
-            if !cidr.contains(&g) {
-                return Err(Error::config(format!(
-                    "network {name}: gateway {g} is outside {cidr}"
-                )));
-            }
-        }
-        for key in c.extra.keys() {
-            warnings.push(format!("network {name}: ignoring ipam {key:?}"));
-        }
-        subnets.push(crate::project::Subnet {
-            cidr: cidr.trunc(),
-            gateway,
-        });
-    }
-    Ok(Network {
+/// The pod a `network_mode: none` service runs in: loopback only.
+fn loopback_pod(name: &str) -> Pod {
+    Pod {
         name: name.into(),
-        driver,
-        parent,
-        subnets,
-        mtu,
-    })
+        hostname: name.into(),
+        domainname: None,
+        share_uts: true,
+        share_ipc: true,
+        attachments: vec![],
+        dns: vec![],
+        dns_search: vec![],
+        dns_options: vec![],
+        extra_hosts: vec![],
+        sysctls: IndexMap::new(),
+        ipv6: true,
+        firewall: None,
+        implicit: true,
+    }
 }
 
-fn attachments(
-    owner: &str,
-    raw: Option<raw::Attachments>,
-    networks: &IndexMap<String, Network>,
-    mac_for_first: Option<&str>,
-) -> Result<Vec<Attachment>> {
-    let pairs = raw.map(raw::Attachments::into_pairs).unwrap_or_default();
+/// The first usable host of an IPv4 subnet, the default gateway. A /31 or
+/// /32 has none.
+pub fn first_host(net: &Ipv4Net) -> Option<Ipv4Addr> {
+    if net.prefix_len() >= 31 {
+        return None;
+    }
+    Some(Ipv4Addr::from(u32::from(net.network()) + 1))
+}
+
+fn pod_networks(pod: &str, raw: Vec<raw::PodNetwork>) -> Result<Vec<Attachment>> {
     let mut out = Vec::new();
     let mut explicit_default = 0;
-    for (i, (net_name, a)) in pairs.into_iter().enumerate() {
-        let net = networks.get(&net_name).ok_or_else(|| {
-            Error::config(format!(
-                "{owner}: network {net_name:?} is not defined under networks:"
-            ))
-        })?;
-        for key in a.extra.keys() {
-            if key == "aliases" || key == "priority" || key.starts_with("x-") {
-                continue;
-            }
-            return Err(Error::config(format!(
-                "{owner}: network {net_name}: unknown key {key:?}"
-            )));
-        }
-        let mut addrs = Vec::new();
-        for (s, what) in a
-            .ipv4_address
-            .iter()
-            .map(|s| (s, "ipv4_address"))
-            .chain(a.ipv6_address.iter().map(|s| (s, "ipv6_address")))
-            .chain(a.addresses.iter().map(|s| (s, "addresses")))
+    for (i, n) in raw.into_iter().enumerate() {
+        let iface = n.interface.clone().unwrap_or_else(|| format!("eth{i}"));
+        let err = |m: String| Error::config(format!("pod {pod}: network {iface}: {m}"));
+        let parent = n
+            .parent
+            .clone()
+            .ok_or_else(|| err("parent (the host interface, such as vlan4) is required".into()))?;
+        if parent.is_empty()
+            || parent.len() > 15
+            || !parent
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@'))
         {
-            addrs.push(
-                address(s, net).map_err(|e| {
-                    Error::config(format!("{owner}: network {net_name}: {what}: {e}"))
-                })?,
-            );
+            return Err(err(format!("invalid parent {parent:?}")));
         }
-        let addressing = if a.dhcp {
-            if addrs.iter().any(|a| a.addr().is_ipv4()) {
-                return Err(Error::config(format!(
-                    "{owner}: network {net_name}: dhcp and a static IPv4 address are exclusive"
+        let driver = match n.driver.as_deref().unwrap_or("macvlan") {
+            "macvlan" => NetDriver::Macvlan(MacvlanMode::Bridge),
+            "ipvlan" => NetDriver::Ipvlan(IpvlanMode::L2),
+            d => {
+                return Err(err(format!(
+                    "driver {d:?} is not supported (macvlan or ipvlan)"
                 )));
+            }
+        };
+        let parse_ip = |s: &str, what: &str| -> Result<IpAddr> {
+            s.parse::<IpAddr>()
+                .map_err(|_| err(format!("invalid {what} {s:?}")))
+        };
+        let address = n.address.as_deref().ok_or_else(|| {
+            err("address is required: an address with prefix (10.10.10.10/24) or dhcp".into())
+        })?;
+        let mut gateway = None;
+        let addressing = if address == "dhcp" {
+            if n.gateway.is_some() {
+                return Err(err(
+                    "gateway comes from the DHCP lease; remove gateway:".into()
+                ));
+            }
+            if n.address6.is_some() || n.gateway6.is_some() {
+                return Err(err(
+                    "address6 together with address: dhcp is not supported yet".into(),
+                ));
             }
             Addressing::Dhcp
-        } else if addrs.is_empty() {
-            if net.subnets.iter().any(|s| s.cidr.addr().is_ipv4()) {
-                return Err(Error::config(format!(
-                    "{owner}: network {net_name}: set ipv4_address or dhcp: true (gantry does not allocate LAN addresses)"
-                )));
-            }
-            Addressing::None
         } else {
-            Addressing::Static(addrs.clone())
-        };
-        // DHCP pods may also carry static IPv6 addresses.
-        let addressing = match (addressing, addrs.is_empty()) {
-            (Addressing::Dhcp, false) => {
-                return Err(Error::config(format!(
-                    "{owner}: network {net_name}: static addresses together with dhcp are not supported yet"
+            let v4 = match address.parse::<IpNet>() {
+                Ok(IpNet::V4(v)) => v,
+                Ok(IpNet::V6(_)) => {
+                    return Err(err(
+                        "address must be IPv4; put an IPv6 address in address6".into()
+                    ));
+                }
+                Err(_) if address.parse::<IpAddr>().is_ok() => {
+                    return Err(err(format!(
+                        "address {address} needs a prefix length, like {address}/24"
+                    )));
+                }
+                Err(_) => return Err(err(format!("invalid address {address:?}"))),
+            };
+            let subnet = v4.trunc();
+            if v4.prefix_len() < 31
+                && (v4.addr() == subnet.network() || v4.addr() == subnet.broadcast())
+            {
+                return Err(err(format!(
+                    "{} is the network or broadcast address of {subnet}",
+                    v4.addr()
                 )));
             }
-            (a, _) => a,
+            gateway = match &n.gateway {
+                Some(g) => match parse_ip(g, "gateway")? {
+                    IpAddr::V4(g4) if subnet.contains(&g4) => Some(IpAddr::V4(g4)),
+                    g => return Err(err(format!("gateway {g} is outside {subnet}"))),
+                },
+                None => first_host(&subnet).map(IpAddr::V4),
+            };
+            if gateway == Some(IpAddr::V4(v4.addr())) {
+                return Err(err(format!(
+                    "{} is the gateway of {subnet}; set gateway: or pick another address",
+                    v4.addr()
+                )));
+            }
+            let mut addrs = vec![IpNet::V4(v4)];
+            if let Some(a6) = &n.address6 {
+                match a6.parse::<IpNet>() {
+                    Ok(IpNet::V6(v)) => addrs.push(IpNet::V6(v)),
+                    _ => {
+                        return Err(err(format!(
+                            "address6 {a6:?} must be an IPv6 address with prefix, like 2001:db8::10/64"
+                        )));
+                    }
+                }
+            }
+            Addressing::Static(addrs)
         };
-        let mac_str = a
+        let gateway6 = match (&n.gateway6, &addressing) {
+            (None, _) => None,
+            (Some(g), Addressing::Static(addrs)) => {
+                let g = parse_ip(g, "gateway6")?;
+                let ok = g.is_ipv6()
+                    && (addrs.iter().any(|a| a.trunc().contains(&g))
+                        || matches!(g, IpAddr::V6(v) if v.is_unicast_link_local()));
+                if !ok {
+                    return Err(err(format!(
+                        "gateway6 {g} is not in the address6 subnet or link local"
+                    )));
+                }
+                if n.address6.is_none() {
+                    return Err(err("gateway6 needs address6".into()));
+                }
+                Some(g)
+            }
+            // Rejected above for DHCP entries.
+            (Some(_), Addressing::Dhcp) => None,
+        };
+        let mac = n
             .mac_address
             .as_deref()
-            .or(if i == 0 { mac_for_first } else { None });
-        let mac = mac_str
-            .map(|m| parse_mac(m).map_err(|e| Error::config(format!("{owner}: {e}"))))
+            .map(|m| parse_mac(m).map_err(&err))
             .transpose()?;
-        if mac.is_some() && matches!(net.driver, NetDriver::Ipvlan(_)) {
-            return Err(Error::config(format!(
-                "{owner}: network {net_name}: ipvlan links share the parent's MAC address"
-            )));
+        if mac.is_some() && matches!(driver, NetDriver::Ipvlan(_)) {
+            return Err(err(
+                "ipvlan links share the parent's MAC address; remove mac_address".into(),
+            ));
         }
-        if a.default_route == Some(true) {
+        if n.default_route == Some(true) {
             explicit_default += 1;
         }
-        let gateway = a
-            .gateway
-            .as_deref()
-            .map(|g| {
-                g.parse::<IpAddr>()
-                    .map_err(|_| Error::config(format!("{owner}: invalid gateway {g:?}")))
-            })
-            .transpose()?;
         out.push((
-            a.default_route,
+            n.default_route,
             Attachment {
-                network: net_name,
-                ifname: a.interface.clone().unwrap_or_else(|| format!("eth{i}")),
+                ifname: iface.clone(),
+                parent,
+                driver,
                 addressing,
                 mac,
                 default_route: false,
                 gateway,
+                gateway6,
             },
         ));
     }
     if explicit_default > 1 {
         return Err(Error::config(format!(
-            "{owner}: only one network may set default_route: true"
+            "pod {pod}: only one network entry may set default_route: true"
         )));
     }
     let first_default = if explicit_default == 1 {
@@ -706,9 +666,15 @@ fn attachments(
     let mut result = Vec::new();
     for (i, (_, mut a)) in out.into_iter().enumerate() {
         a.default_route = Some(i) == first_default;
+        if a.default_route && a.gateway.is_none() && matches!(a.addressing, Addressing::Static(_)) {
+            return Err(Error::config(format!(
+                "pod {pod}: network {}: a /31 or /32 address has no first host; set gateway:",
+                a.ifname
+            )));
+        }
         if names.contains(&a.ifname) {
             return Err(Error::config(format!(
-                "{owner}: interface name {} is used twice",
+                "pod {pod}: interface name {} is used twice",
                 a.ifname
             )));
         }
@@ -723,7 +689,7 @@ fn attachments(
             || a.ifname.starts_with('.')
         {
             return Err(Error::config(format!(
-                "{owner}: invalid interface name {:?}",
+                "pod {pod}: invalid interface name {:?}",
                 a.ifname
             )));
         }
@@ -731,22 +697,6 @@ fn attachments(
         result.push(a);
     }
     Ok(result)
-}
-
-/// Parses `10.0.0.5` (prefix from the network's subnet) or `10.0.0.5/24`.
-fn address(s: &str, net: &Network) -> std::result::Result<IpNet, String> {
-    if let Ok(n) = s.parse::<IpNet>() {
-        return Ok(n);
-    }
-    let ip: IpAddr = s.parse().map_err(|_| format!("invalid address {s:?}"))?;
-    let subnet = net
-        .subnets
-        .iter()
-        .find(|sn| sn.cidr.contains(&ip))
-        .ok_or_else(|| {
-            format!("{ip} is outside the network's subnets; write it with a prefix length")
-        })?;
-    IpNet::new(ip, subnet.cidr.prefix_len()).map_err(|e| e.to_string())
 }
 
 pub fn parse_mac(s: &str) -> std::result::Result<[u8; 6], String> {
@@ -884,9 +834,9 @@ fn firewall(owner: &str, fw: raw::Firewall) -> Result<Firewall> {
         output.push(rule(owner, &format!("output[{i}]"), r, peers, &action)?);
     }
     Ok(Firewall {
-        input_policy: action(policy.input.as_deref(), Action::Drop, "policy.input")?,
+        input_policy: action(policy.input.as_deref(), Action::Accept, "policy.input")?,
         output_policy: action(policy.output.as_deref(), Action::Accept, "policy.output")?,
-        allow_ping: fw.allow_ping.unwrap_or(true),
+        defaults: fw.defaults.unwrap_or(true),
         log_dropped: fw.log_dropped,
         input,
         output,
@@ -993,8 +943,13 @@ fn parse_peer(s: &str) -> std::result::Result<Peer, String> {
     if let Some(p) = s.strip_prefix("service:") {
         return Ok(Peer::Service(p.into()));
     }
-    if let Some(p) = s.strip_prefix("network:") {
-        return Ok(Peer::Network(p.into()));
+    if s == "subnet" {
+        return Ok(Peer::Subnet);
+    }
+    if s.starts_with("network:") {
+        return Err(format!(
+            "{s:?}: named networks are gone; use subnet for the pod's own subnet"
+        ));
     }
     if let Ok(n) = s.parse::<IpNet>() {
         return Ok(Peer::Cidr(n.trunc()));
@@ -1003,7 +958,7 @@ fn parse_peer(s: &str) -> std::result::Result<Peer, String> {
         return Ok(Peer::Cidr(IpNet::from(ip)));
     }
     Err(format!(
-        "invalid peer {s:?} (any, a CIDR, pod:<name>, service:<name>, network:<name>)"
+        "invalid peer {s:?} (any, subnet, a CIDR, pod:<name>, service:<name>)"
     ))
 }
 
@@ -1589,127 +1544,176 @@ mod tests {
         .map(|l| l.project)
     }
 
-    const NET: &str = "networks:\n  lan: { driver: macvlan, parent: eth9, ipam: { config: [{ subnet: 192.0.2.0/24, gateway: 192.0.2.1 }] } }\n";
+    /// One pod on the documentation subnet.
+    const POD: &str = "pods:\n  p:\n    network: [{ parent: eth9, address: 192.0.2.5/24 }]\n";
 
     #[test]
-    fn implicit_pod_from_service_networks() {
+    fn pod_network_defaults() {
         let p = try_load(&format!(
-            "name: t\n{NET}services:\n  web:\n    image: nginx\n    hostname: www\n    mac_address: 02:00:00:00:00:01\n    networks:\n      lan: {{ ipv4_address: 192.0.2.5 }}\n"
+            "name: t\n{POD}services:\n  web: {{ image: nginx }}\n"
         ))
         .unwrap();
-        let pod = &p.pods["web"];
-        assert!(pod.implicit);
-        assert_eq!(pod.hostname, "www");
+        let a = &p.pods["p"].attachments[0];
+        assert_eq!(a.ifname, "eth0");
+        assert_eq!(a.parent, "eth9");
+        assert_eq!(a.driver, NetDriver::Macvlan(MacvlanMode::Bridge));
         assert_eq!(
-            pod.attachments[0].addressing,
+            a.addressing,
             Addressing::Static(vec!["192.0.2.5/24".parse().unwrap()])
         );
-        assert_eq!(pod.attachments[0].mac, Some([2, 0, 0, 0, 0, 1]));
-        assert!(pod.attachments[0].default_route);
+        assert_eq!(a.gateway, Some("192.0.2.1".parse().unwrap()));
+        assert_eq!(a.gateway6, None);
+        assert!(a.default_route);
+        // The only pod takes services without pod:.
+        assert_eq!(p.services["web"].pod, "p");
         assert_eq!(p.services["web"].container_name, "t-web-1");
+        // Every pod gets a firewall with the defaults on and input open.
+        let fw = p.pods["p"].firewall.as_ref().unwrap();
+        assert!(fw.defaults);
+        assert_eq!(fw.input_policy, Action::Accept);
+    }
+
+    #[test]
+    fn pod_network_options() {
+        let p = try_load(
+            "name: t\npods:\n  p:\n    network:\n      - { parent: eth9, address: 192.0.2.5/24, driver: ipvlan, gateway: 192.0.2.254, address6: '2001:db8::5/64', gateway6: 'fe80::1' }\n      - { parent: eth8, address: dhcp, interface: mgmt, default_route: true }\nservices: {}\n",
+        )
+        .unwrap();
+        let [a, b] = p.pods["p"].attachments.as_slice() else {
+            panic!("two attachments")
+        };
+        assert_eq!(a.driver, NetDriver::Ipvlan(IpvlanMode::L2));
+        assert_eq!(a.gateway, Some("192.0.2.254".parse().unwrap()));
+        assert_eq!(a.gateway6, Some("fe80::1".parse().unwrap()));
+        assert_eq!(
+            a.addressing,
+            Addressing::Static(vec![
+                "192.0.2.5/24".parse().unwrap(),
+                "2001:db8::5/64".parse().unwrap()
+            ])
+        );
+        assert!(!a.default_route);
+        assert_eq!(b.ifname, "mgmt");
+        assert_eq!(b.addressing, Addressing::Dhcp);
+        assert!(b.default_route);
+    }
+
+    #[test]
+    fn first_host_is_the_default_gateway() {
+        use super::first_host;
+        let f = |s: &str| first_host(&s.parse().unwrap()).map(|a| a.to_string());
+        assert_eq!(f("10.10.10.0/24").as_deref(), Some("10.10.10.1"));
+        assert_eq!(f("10.10.8.0/22").as_deref(), Some("10.10.8.1"));
+        assert_eq!(f("192.0.2.216/29").as_deref(), Some("192.0.2.217"));
+        assert_eq!(f("10.0.0.0/31"), None);
+        assert_eq!(f("10.0.0.1/32"), None);
     }
 
     #[test]
     fn network_mode_service_joins_pod() {
         let p = try_load(&format!(
-            "name: t\n{NET}services:\n  a:\n    image: x\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n  b:\n    image: y\n    network_mode: service:a\n"
+            "name: t\n{POD}  q:\n    network: [{{ parent: eth9, address: 192.0.2.6/24 }}]\nservices:\n  a: {{ image: x, pod: q }}\n  b:\n    image: y\n    network_mode: service:a\n"
         ))
         .unwrap();
-        assert_eq!(p.services["b"].pod, "a");
+        assert_eq!(p.services["b"].pod, "q");
         assert!(!p.pods.contains_key("b"));
     }
 
     #[test]
     fn errors_are_helpful() {
-        let cases = [
+        let n = |extra: &str| {
+            format!(
+                "name: t\npods:\n  p:\n    network: [{{ parent: eth9, {extra} }}]\nservices: {{}}\n"
+            )
+        };
+        let cases: Vec<(String, &str)> = vec![
             (
-                "name: t\nnetworks:\n  n: { driver: bridge }\nservices: {}\n",
-                "macvlan or ipvlan",
+                "name: t\nnetworks:\n  lan: { driver: macvlan }\nservices: {}\n".into(),
+                "top-level networks",
             ),
             (
-                &format!("name: t\n{NET}services:\n  a: {{ image: x, networks: [lan] }}\n"),
-                "ipv4_address or dhcp",
+                "name: t\npods:\n  p: { networks: { lan: { ipv4_address: 192.0.2.5 } } }\nservices: {}\n".into(),
+                "replaced by network:",
             ),
+            ("name: t\npods:\n  p:\n    network: [{ address: 192.0.2.5/24 }]\nservices: {}\n".into(), "parent"),
+            (n("driver: macvlan"), "address is required"),
+            (n("address: 192.0.2.5"), "needs a prefix length"),
+            (n("address: 192.0.2.0/24"), "network or broadcast"),
+            (n("address: 192.0.2.1/24"), "is the gateway"),
+            (n("address: 192.0.2.5/24, gateway: 198.51.100.1"), "outside"),
+            (n("address: 192.0.2.5/32"), "set gateway:"),
+            (n("address: 192.0.2.5/24, driver: bridge"), "macvlan or ipvlan"),
+            (n("address: dhcp, gateway: 192.0.2.1"), "DHCP lease"),
+            (n("address: 192.0.2.5/24, address6: 192.0.2.6/24"), "IPv6 address with prefix"),
+            (n("address: 192.0.2.5/24, gateway6: 'fe80::1'"), "gateway6 needs address6"),
             (
-                &format!(
-                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices:\n  a: {{ image: x, pod: p, hostname: h }}\n"
-                ),
-                "belongs to the pod",
+                n("address: 192.0.2.5/24, driver: ipvlan, mac_address: 02:00:00:00:00:01"),
+                "share the parent's MAC",
             ),
+            (n("address: 192.0.2.5/24, bogus: 1"), "unknown field"),
             (
-                &format!(
-                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\n  q: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}  q:\n    network: [{{ parent: eth9, address: 192.0.2.5/24 }}]\nservices: {{}}\n"),
                 "used by pods",
             ),
             (
-                "name: t\nservices:\n  a: { image: x, depends_on: [b] }\n  b: { image: y, depends_on: [a] }\n",
+                format!("name: t\n{POD}  q:\n    network: [{{ parent: eth9, address: 192.0.2.6/24, driver: ipvlan }}]\nservices: {{}}\n"),
+                "not both",
+            ),
+            (
+                format!("name: t\n{POD}services:\n  a: {{ image: x, pod: p, hostname: h }}\n"),
+                "belongs to the pod",
+            ),
+            (
+                format!("name: t\n{POD}  q:\n    network: [{{ parent: eth9, address: 192.0.2.6/24 }}]\nservices:\n  a: {{ image: x }}\n"),
+                "set pod:",
+            ),
+            ("name: t\nservices:\n  a: { image: x }\n".into(), "no pod to run in"),
+            (
+                format!("name: t\n{POD}    firewall: {{ input: [{{ from: network:lan }}] }}\nservices: {{}}\n"),
+                "use subnet",
+            ),
+            (
+                "name: t\nservices:\n  a: { image: x, network_mode: none, depends_on: [b] }\n  b: { image: y, network_mode: none, depends_on: [a] }\n".into(),
                 "cycle",
             ),
             (
-                "name: t\nservices:\n  a: { build: \"https://example.com/r.git\" }\n",
+                "name: t\nservices:\n  a: { build: \"https://example.com/r.git\", network_mode: none }\n".into(),
                 "remote build contexts",
             ),
             (
-                "name: t\nservices:\n  a: { image: x, network_mode: none, container_name: \"a/../b\" }\n",
+                "name: t\nservices:\n  a: { image: x, network_mode: none, container_name: \"a/../b\" }\n".into(),
                 "container_name",
             ),
+            ("name: t\nbogus: 1\nservices: {}\n".into(), "unsupported top-level key"),
             (
-                "name: t\nbogus: 1\nservices: {}\n",
-                "unsupported top-level key",
-            ),
-            (
-                &format!(
-                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ to: 1.2.3.4 }}] }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    firewall: {{ input: [{{ to: 1.2.3.4 }}] }}\nservices: {{}}\n"),
                 "use from:",
             ),
             (
-                &format!(
-                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ from: pod:nope }}] }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    firewall: {{ input: [{{ from: pod:nope }}] }}\nservices: {{}}\n"),
                 "unknown",
             ),
             (
-                &format!(
-                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ port: 80, comment: 'a\"b' }}] }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    firewall: {{ input: [{{ port: 80, comment: 'a\"b' }}] }}\nservices: {{}}\n"),
                 "without quotes",
             ),
-        ];
-        let more = [
             (
-                format!(
-                    "name: t\n{NET}pods:\n  p:\n    networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }}\n    firewall: {{ input: [{{ port: 80, comment: 'a\\\\' }}] }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    firewall: {{ input: [{{ port: 80, comment: 'a\\\\' }}] }}\nservices: {{}}\n"),
                 "backslashes",
             ),
+            (n("address: 192.0.2.5/24, interface: 'e\"0'"), "invalid interface name"),
             (
-                format!(
-                    "name: t\n{NET}pods:\n  p: {{ networks: {{ lan: {{ ipv4_address: 192.0.2.5, interface: 'e\"0' }} }} }}\nservices: {{}}\n"
-                ),
-                "invalid interface name",
-            ),
-            (
-                format!(
-                    "name: t\n{NET}pods:\n  p: {{ hostname: 'a b', networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    hostname: 'a b'\nservices: {{}}\n"),
                 "invalid hostname",
             ),
             (
-                format!(
-                    "name: t\n{NET}pods:\n  p: {{ dns_search: ['x\\nnameserver 6.6.6.6'], networks: {{ lan: {{ ipv4_address: 192.0.2.5 }} }} }}\nservices: {{}}\n"
-                ),
+                format!("name: t\n{POD}    dns_search: ['x\\nnameserver 6.6.6.6']\nservices: {{}}\n"),
                 "invalid dns_search",
             ),
         ];
-        for (yaml, want) in &more {
+        for (yaml, want) in &cases {
             let err = try_load(yaml).unwrap_err().to_string();
-            assert!(err.contains(want), "expected {want:?} in {err:?}");
-        }
-        for (yaml, want) in cases {
-            let err = try_load(yaml).unwrap_err().to_string();
-            assert!(err.contains(want), "expected {want:?} in {err:?}");
+            assert!(err.contains(want), "expected {want:?} in {err:?}\n{yaml}");
         }
     }
 

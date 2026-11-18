@@ -3,34 +3,33 @@
 name: gt-e2e
 runtime: ${GANTRY_RUNTIME:-docker}
 
-networks:
-  lan:
-    driver: ${GT_DRIVER:-macvlan}
-    driver_opts:
-      parent: ${GT_PARENT:?set GT_PARENT}
-      mode: ${GT_MODE:-bridge}
-    ipam:
-      config:
-        - subnet: ${GT_SUBNET:?set GT_SUBNET}
-          gateway: ${GT_GATEWAY:?set GT_GATEWAY}
-
 pods:
   web:
     hostname: webhost
-    networks:
-      lan: { ipv4_address: "${GT_IP1:?set GT_IP1}" }
+    network:
+      - parent: ${GT_PARENT:?set GT_PARENT}
+        driver: ${GT_DRIVER:-macvlan}
+        address: ${GT_IP1:?set GT_IP1}/${GT_PREFIX:?set GT_PREFIX}
+        gateway: ${GT_GATEWAY:?set GT_GATEWAY}
     firewall:
       input:
         - { proto: tcp, port: 8080, from: pod:other }
   data:
-    networks:
-      lan: { ipv4_address: "${GT_IP2:?set GT_IP2}" }
+    network:
+      - parent: ${GT_PARENT}
+        driver: ${GT_DRIVER:-macvlan}
+        address: ${GT_IP2:?set GT_IP2}/${GT_PREFIX}
+        gateway: ${GT_GATEWAY}
     firewall:
       input:
         - { proto: tcp, port: 6379, from: pod:web }
+  # No firewall section: the default policy applies.
   other:
-    networks:
-      lan: { ipv4_address: "${GT_IP3:?set GT_IP3}" }
+    network:
+      - parent: ${GT_PARENT}
+        driver: ${GT_DRIVER:-macvlan}
+        address: ${GT_IP3:?set GT_IP3}/${GT_PREFIX}
+        gateway: ${GT_GATEWAY}
 
 services:
   server:

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.2.x, with the Docker Engine API engine layer |
+| Version covered | 0.3.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Design](design.md) |
 
@@ -112,7 +112,7 @@ addresses on a parent interface. Scenarios are arguments; with none it runs
 
 ```sh
 sudo tests/integration/dhcp-lab.sh up
-sudo GT_PARENT=gtdhcp0 GT_SUBNET=10.99.0.0/24 GT_GATEWAY=10.99.0.1 \
+sudo GT_PARENT=gtdhcp0 GT_PREFIX=24 GT_GATEWAY=10.99.0.1 \
      GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13 \
      tests/integration/run.sh docker podman kiri dhcp dhcpmove ipv6
 ```
@@ -138,6 +138,7 @@ no firewall).
 | Firewall blocks `data` to `web:8080` | e2e | FR-FW-05 |
 | Default route via gateway | e2e | FR-NET-05 |
 | nft table loaded in pod | e2e | FR-FW-01 |
+| Pod without a `firewall:` section gets the default rules | e2e | FR-FW-01 |
 | Host has no `gantry` table | e2e | FR-FW-02, NFR-SEC-01 |
 | `ps` shows redis healthy | e2e | FR-CLI-05, FR-CLI-08 |
 | Docker restart keeps the pod (Docker only) | e2e | FR-ST-04 |
@@ -165,11 +166,11 @@ it waits for the client's T1 renewal.
 
 ### 4.3 ipvlan
 
-The e2e scenario reads `GT_DRIVER` and `GT_MODE`, so the same checks run
-over ipvlan:
+The e2e scenario reads `GT_DRIVER`, so the same checks run over ipvlan
+(always in `l2` mode):
 
 ```sh
-sudo GT_DRIVER=ipvlan GT_MODE=l2 GT_PARENT=... GT_SUBNET=... GT_GATEWAY=... \
+sudo GT_DRIVER=ipvlan GT_PARENT=... GT_PREFIX=... GT_GATEWAY=... \
      GT_IP1=... GT_IP2=... GT_IP3=... \
      tests/integration/run.sh docker podman
 ```

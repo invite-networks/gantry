@@ -32,10 +32,8 @@ sshd -T -C user=gantry,host=x,addr=127.0.0.1 | grep -i '^forcecommand /usr/libex
 mkdir -p /etc/gantry/demo
 cat > /etc/gantry/demo/gantry.yaml <<'Y'
 name: demo
-networks:
-  lan: { driver: macvlan, parent: eth0, ipam: { config: [ { subnet: 192.0.2.0/24, gateway: 192.0.2.1 } ] } }
 pods:
-  web: { networks: { lan: { ipv4_address: 192.0.2.10 } } }
+  web: { network: [ { parent: eth0, address: 192.0.2.10/24 } ] }
 services:
   nginx: { image: nginx:alpine, pod: web }
 Y

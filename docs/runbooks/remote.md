@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.2.x installed from the .deb |
+| Applies to | Gantry 0.3.x installed from the .deb |
 | Validation | Package install, the restricted account, every refusal and purge tested in a Debian 13 container (`tests/packaging/remote.sh`, 40 checks); sshd scoping also checked on Debian 12 and Ubuntu 22.04. Live run on the Debian 13 reference host (2026-11-16): Docker, Podman and kiri in one pod, every command in section 3, the refusals in sections 3 and 4, and key revocation. |
 
 Gantry has to run on the host that runs the containers, as root. To drive

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.2.x, with the Docker Engine API engine layer |
+| Version covered | 0.3.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
@@ -46,7 +46,7 @@ to start containers inside namespaces that already exist.
 |---|---|---|
 | CLI | `src/bin/gantry.rs` | Argument parsing (clap), command dispatch, log streaming, `setup` commands, the hidden DHCP agent entry point. |
 | Compose loader | `src/compose/` | Reads and merges files (`mod.rs`), deserializes raw YAML (`raw.rs`), interpolates variables (`interpolate.rs`), parses durations and sizes (`units.rs`), and validates and normalizes into the project model (`normalize.rs`). |
-| Project model | `src/project.rs` | Normalized, validated types: `Project`, `Pod`, `Service`, `Network`, `Volume`, firewall rules, `RuntimeKind`. Saves and loads the project snapshot. |
+| Project model | `src/project.rs` | Normalized, validated types: `Project`, `Pod` (with its network `Attachment`s), `Service`, `Volume`, firewall rules, `RuntimeKind`. Saves and loads the project snapshot. |
 | Pod manager | `src/pod/mod.rs` | `ensure` (create or reuse), `remove`, `refresh` (hosts files and firewalls), config hashing, DHCP agent start and stop. |
 | Namespaces | `src/pod/ns.rs` | Creating, pinning, entering and removing network, UTS and IPC namespaces. Running a command inside a netns. |
 | Links | `src/pod/link.rs` | rtnetlink: macvlan and ipvlan creation, renaming, addresses, routes, MAC derivation, gratuitous ARP. |
@@ -67,10 +67,11 @@ to start containers inside namespaces that already exist.
 2. Interpolate variables from the environment and `.env` [FR-CMP-02].
 3. Deserialize into the raw model and warn on ignored keys [FR-CMP-04].
    `build:` sections are kept for the build step [FR-CMP-09].
-4. Normalize: resolve the project name [FR-CMP-08], apply profiles, build
-   implicit pods for services without `pod:` and resolve `network_mode`
+4. Normalize: resolve the project name [FR-CMP-08], apply profiles, place
+   services without `pod:` in the only pod and resolve `network_mode`
    [FR-POD-06], resolve runtimes (project, pod, service, then `--runtime`)
-   [FR-RT-08], attach addresses to networks, validate hostnames, DNS options
+   [FR-RT-08], validate each pod network entry and default its gateway to
+   the first host of its subnet [FR-NET-05, FR-ADDR-02], validate hostnames, DNS options
    and firewall fields [NFR-SEC-03], reject reserved labels [FR-CMP-06] and
    pod settings on pod members [FR-CMP-05].
 
@@ -91,8 +92,9 @@ Otherwise it is removed and created again [FR-POD-07]:
    namespaces in the pod directory [FR-POD-02, FR-POD-03].
 3. Bring up `lo`, write pod sysctls including the unprivileged port and ping
    defaults, and disable IPv6 if asked [FR-POD-08, FR-POD-09].
-4. For each network, create a macvlan or ipvlan link on the parent from the
-   host namespace directly into the pod namespace, rename it, set MTU and MAC
+4. For each network entry, create a macvlan (`bridge`) or ipvlan (`l2`)
+   link on its parent from the host namespace directly into the pod
+   namespace, rename it and set the MAC. The link inherits the parent's MTU
    [FR-NET-01 to FR-NET-04, FR-NET-08].
 5. Static networks: add addresses and the default route, send gratuitous ARP
    [FR-ADDR-02, FR-NET-05, FR-NET-06]. DHCP networks: set `rp_filter` to 0 on
@@ -139,8 +141,11 @@ stay alive until they exit.
 
 ## 5. Firewall
 
-`firewall::render` turns a pod's `firewall:` section, plus service `ports:`
-and `expose:` [FR-FW-06], into one ruleset:
+`firewall::render` turns a pod's `firewall:` section (or an empty one when
+the pod has none), plus service `ports:` and `expose:` [FR-FW-06], into one
+ruleset. Input rules are ordered: the default any-ICMP accept, the pod's own
+rules, `ports:` and `expose:`, then the default reject from `subnet`
+[FR-FW-03]:
 
 ```
 table inet gantry {          # replaced atomically with nft -f
@@ -150,10 +155,12 @@ table inet gantry {          # replaced atomically with nft -f
 ```
 
 The fixed preamble allows loopback, established and related, IPv6 neighbor
-discovery, essential ICMP errors, DHCP replies on DHCP pods and, unless
-disabled, ping [FR-FW-04]. Peers are resolved through an address book built
+discovery, essential ICMP errors and DHCP replies on DHCP pods [FR-FW-04]. Peers are resolved through an address book built
 from saved pod state and leases. An unknown peer is skipped for accept rules
-and is an error for deny rules [FR-FW-07]. `reject` is rendered as an
+and is an error for deny rules [FR-FW-07]. `subnet` resolves to the subnets
+of the pod's static addresses and current leases. On a DHCP pod without a
+lease it is empty and the rule is skipped until the agent reloads the
+firewall with the lease. `reject` is rendered as an
 explicit reject statement since base chain policies only take accept or drop.
 
 The ruleset is loaded by running `nft -f -` inside the pod namespace

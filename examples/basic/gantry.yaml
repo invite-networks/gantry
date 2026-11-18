@@ -1,37 +1,30 @@
-# Two pods on the LAN through macvlan. Adjust the network section to your
-# environment. Values below match the gantry test host.
+# Two pods on the LAN through macvlan. Adjust parent, addresses and gateway
+# to your environment.
 name: basic
 runtime: ${GANTRY_RUNTIME:-docker}
 
-networks:
-  lan:
-    driver: macvlan
-    driver_opts:
-      parent: ${LAN_PARENT:-vlan4}
-      mode: bridge
-    ipam:
-      config:
-        - subnet: 192.0.2.216/29
-          gateway: 192.0.2.222
-
 pods:
+  # Default firewall: any ICMP, nothing from the local subnet, everything
+  # routed is left to the upstream firewall. ports: below opens 80 to all.
   web:
     hostname: web
-    networks:
-      lan:
-        ipv4_address: 192.0.2.218
+    network:
+      - parent: ${LAN_PARENT:-vlan4}
+        address: 192.0.2.218/29
+        gateway: 192.0.2.222          # not the first host, so it is set
     firewall:
       log_dropped: true
-      input:
-        - { proto: tcp, port: 22, from: 198.51.100.0/24, comment: "ssh from the lab" }
       output:
         - { to: 192.168.0.0/16, action: reject }
 
+  # Locked down: only the web pod may reach redis.
   data:
-    networks:
-      lan:
-        ipv4_address: 192.0.2.219
+    network:
+      - parent: ${LAN_PARENT:-vlan4}
+        address: 192.0.2.219/29
+        gateway: 192.0.2.222
     firewall:
+      policy: { input: drop }
       input:
         - { proto: tcp, port: 6379, from: pod:web }
 

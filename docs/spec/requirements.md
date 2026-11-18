@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.2.x (rapid development) |
+| Version covered | 0.3.x (rapid development) |
 | Status | Draft for review |
 | Related | [Design](design.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
@@ -60,7 +60,7 @@ met is in the [design](design.md).
 | Project | One project file (plus overrides) and everything created from it. |
 | Pod | A set of namespaces created by Gantry that one or more containers join. |
 | Service | One container definition. Each service runs in exactly one pod. |
-| Network | A parent interface on the host plus its subnet and gateway. |
+| Network | One entry in a pod's `network:` list: a parent interface on the host, an address with prefix (or DHCP), and a gateway. |
 | Runtime | The engine that runs a service: `docker`, `podman` or `kiri`. |
 | Engine socket | The Unix socket where a runtime serves the Docker Engine API. |
 
@@ -77,7 +77,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-POD-03 | Gantry shall set the pod hostname and optional domain name inside the shared UTS namespace. | M |
 | FR-POD-04 | Pods shall run without an infra or pause container. Containers join the pinned namespaces by path. | M |
 | FR-POD-05 | All services in a pod shall share the network namespace and reach each other on `127.0.0.1`. | M |
-| FR-POD-06 | A service without `pod:` shall get a pod of its own built from its Compose network settings. `network_mode: service:<x>` or `container:<x>` shall place it in the other service's pod. `network_mode: none` shall give it a loopback-only pod. | M |
+| FR-POD-06 | A service without `pod:` shall join the project's pod when there is exactly one, and be rejected otherwise. `network_mode: service:<x>` or `container:<x>` shall place it in the other service's pod. `network_mode: none` shall give it a loopback-only pod. Pod settings (networks, hostname, DNS, firewall and similar) on a service shall be rejected. | M |
 | FR-POD-07 | Gantry shall recreate a pod, and the containers in it, when its shape changes (addresses, networks, hostname, shared namespaces, sysctls). Firewall and hosts changes shall be applied without a recreate. | M |
 | FR-POD-08 | Gantry shall apply pod `net.*` sysctls to the pod namespace and set `net.ipv4.ip_unprivileged_port_start=0` and `net.ipv4.ping_group_range=0 2147483647` unless the pod overrides them. | M |
 | FR-POD-09 | A pod with `ipv6: false` shall have IPv6 disabled in its namespace. | S |
@@ -87,22 +87,22 @@ Priority: **M** must, **S** should, **C** could.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-NET-01 | Gantry shall attach a pod to each of its networks with a macvlan link on the network's parent interface. Modes: `bridge` (default), `private`, `vepa`, `passthru`. | M |
-| FR-NET-02 | Gantry shall support ipvlan links in modes `l2` (default), `l3` and `l3s` as an alternative to macvlan. | M |
+| FR-NET-01 | Networks shall be defined only under the pod, as a `network:` list. Each entry shall be attached with a macvlan link in `bridge` mode on its `parent` interface. A top-level `networks:` section shall be rejected with an error that points to the pod form. | M |
+| FR-NET-02 | `driver: ipvlan` shall attach the entry with an ipvlan link in `l2` mode instead. Projects that put macvlan and ipvlan links on one parent shall be rejected. | M |
 | FR-NET-03 | Links shall be created directly inside the pod namespace and named `eth0`, `eth1`, and so on, or the name given by `interface:`. | M |
-| FR-NET-04 | macvlan links shall get a stable, locally administered MAC derived from the project, pod and network names unless `mac_address` is set. | M |
-| FR-NET-05 | The first network shall carry the default route unless another sets `default_route: true`. `gateway:` on a pod network overrides the subnet gateway. | M |
+| FR-NET-04 | macvlan links shall get a stable, locally administered MAC derived from the project, pod and interface names unless `mac_address` is set. | M |
+| FR-NET-05 | The first entry shall carry the default route unless another sets `default_route: true`. The IPv4 gateway shall be `gateway:` or, when omitted, the first host of the address's subnet (10.10.10.1 for 10.10.10.10/24). A /31 or /32 default-route entry without `gateway:` shall be rejected. The IPv6 gateway shall be `gateway6:` or come from router advertisements. | M |
 | FR-NET-06 | Gantry shall send gratuitous ARP whenever it assigns an IPv4 address. | M |
 | FR-NET-07 | `driver: bridge` and any driver other than macvlan or ipvlan shall be rejected with an error that explains why. | M |
-| FR-NET-08 | MTU shall be configurable per network. | S |
+| FR-NET-08 | Links shall inherit the parent interface's MTU. | S |
 
 ### 5.3 Addressing
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-ADDR-01 | Every pod network shall have an explicit address source: `ipv4_address`, `ipv6_address`, `addresses` or `dhcp: true`. Gantry shall never pick LAN addresses on its own. | M |
-| FR-ADDR-02 | Bare static addresses shall take the prefix length of the network's subnet. | M |
-| FR-ADDR-03 | With `dhcp: true` Gantry shall acquire an IPv4 lease with a DHCP client that runs inside the pod namespace, sends a client identifier, and applies the address, default route, DNS servers and domain from the lease. | M |
+| FR-ADDR-01 | Every pod network entry shall have `address:`, either an IPv4 address with prefix length or `dhcp`, plus an optional static `address6:`. Gantry shall never pick LAN addresses on its own. | M |
+| FR-ADDR-02 | An address without a prefix length, or that is its subnet's network, broadcast or gateway address, shall be rejected with an error that says so. | M |
+| FR-ADDR-03 | With `address: dhcp` Gantry shall acquire an IPv4 lease with a DHCP client that runs inside the pod namespace, sends a client identifier, and applies the address, default route, DNS servers and domain from the lease. | M |
 | FR-ADDR-04 | The DHCP client shall renew at T1, rebind at T2, drop the address at expiry and reacquire, and release the lease when the pod is removed. | M |
 | FR-ADDR-05 | When a DHCP pod's address changes, Gantry shall refresh every pod's hosts file and firewall in the project. | S |
 | FR-ADDR-06 | Lease values (address, mask, domain name) shall be validated before they are applied or written to `/etc/resolv.conf`. | M |
@@ -121,11 +121,11 @@ Priority: **M** must, **S** should, **C** could.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-FW-01 | A pod with a `firewall:` section shall get one `inet gantry` nftables table inside its network namespace, replaced atomically on each apply. | M |
+| FR-FW-01 | Every pod with a network shall get one `inet gantry` nftables table inside its network namespace, replaced atomically on each apply. | M |
 | FR-FW-02 | Gantry shall never add, change or remove rules in the host's network namespace. | M |
-| FR-FW-03 | A pod without `firewall:` shall be open. A `firewall:` section defaults to input drop and output accept. | M |
-| FR-FW-04 | Loopback, established and related traffic, IPv6 neighbor discovery, essential ICMP errors and DHCP replies (on DHCP pods) shall always be allowed. Ping is allowed unless `allow_ping: false`. | M |
-| FR-FW-05 | Rules shall match protocol, ports and port ranges, interface, and peers given as CIDR, host, `pod:`, `service:`, `network:` or `any`, with actions accept, drop or reject, optional rate limit, logging and comment. | M |
+| FR-FW-03 | Input and output policies shall default to accept. Unless `defaults: false`, Gantry shall add an accept for any ICMP before the pod's rules and a reject from the pod's own subnets (`subnet`) after its rules and ports, whether or not the pod has a `firewall:` section. | M |
+| FR-FW-04 | Loopback, established and related traffic, IPv6 neighbor discovery, essential ICMP errors and DHCP replies (on DHCP pods) shall always be allowed. | M |
+| FR-FW-05 | Rules shall match protocol, ports and port ranges, interface, and peers given as CIDR, host, `pod:`, `service:`, `subnet` (the pod's own subnets, static or leased) or `any`, with actions accept, drop or reject, optional rate limit, logging and comment. | M |
 | FR-FW-06 | Service `ports:` shall open the container port to everyone. A host mapping such as `8080:80` opens the container port and warns. `expose:` shall open the port to the project's other pods only. | M |
 | FR-FW-07 | A deny rule whose peer pod has no known address shall fail with an error rather than be skipped. | M |
 | FR-FW-08 | Rule fields that reach the ruleset (comments, limits, interface names) shall be validated so they cannot inject nftables syntax. | M |

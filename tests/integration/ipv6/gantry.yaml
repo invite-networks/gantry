@@ -1,22 +1,18 @@
-# Two pods with static IPv4 and IPv6 addresses on the lab bridge; pod a
-# only accepts port 7000 from pod b, over either family.
+# Three pods with static IPv4 and IPv6 addresses on the lab bridge. Pod a
+# accepts port 7000 from pod b, over either family; the default policy
+# rejects the rest of the subnet, so c is refused.
 name: v6
 runtime: ${GANTRY_RUNTIME:-docker}
-networks:
-  lab:
-    driver: macvlan
-    parent: gtdhcp0
-    ipam: { config: [ { subnet: 10.99.0.0/24, gateway: 10.99.0.1 }, { subnet: "fd99::/64" } ] }
 pods:
   a:
-    networks: { lab: { ipv4_address: 10.99.0.31, ipv6_address: "fd99::31" } }
+    network: [{ parent: gtdhcp0, address: 10.99.0.31/24, address6: "fd99::31/64" }]
     firewall:
       input:
         - { proto: tcp, port: 7000, from: [pod:b] }
   b:
-    networks: { lab: { ipv4_address: 10.99.0.32, ipv6_address: "fd99::32" } }
+    network: [{ parent: gtdhcp0, address: 10.99.0.32/24, address6: "fd99::32/64" }]
   c:
-    networks: { lab: { ipv4_address: 10.99.0.33, ipv6_address: "fd99::33" } }
+    network: [{ parent: gtdhcp0, address: 10.99.0.33/24, address6: "fd99::33/64" }]
 services:
   sa: { image: alpine:3, pod: a, command: ["sh", "-c", "while true; do echo v6-ok | nc -l -p 7000; done"] }
   sb: { image: alpine:3, pod: b, command: ["sleep", "infinity"] }

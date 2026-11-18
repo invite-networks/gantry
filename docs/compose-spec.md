@@ -1,8 +1,9 @@
 # The Gantry file format
 
-Gantry reads the Compose format and extends it where pods need it. A plain
-`compose.yaml` works when its services use macvlan or ipvlan networks. Everything below is either standard Compose or marked as a
-Gantry extension.
+Gantry reads the Compose format and extends it where pods need it. Services,
+volumes and builds are standard Compose. Networks are not: each pod lists its
+own interfaces, so a project has no top-level `networks:` section. Everything
+below is either standard Compose or marked as a Gantry extension.
 
 Files are looked up in this order: `gantry.yaml`, `gantry.yml`,
 `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`.
@@ -24,60 +25,37 @@ from the environment first, then from `.env` in the project directory (or
 |---|---|
 | `name` | Project name. Default: `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. |
 | `runtime` | **Extension.** Default runtime for services: `docker` (default), `podman` or `kiri`. |
-| `networks` | LAN segments pods attach to (see below). |
-| `pods` | **Extension.** The pods. |
+| `pods` | **Extension.** The pods, each with its own network interfaces and firewall. |
 | `services` | Containers. Each runs in exactly one pod. |
 | `volumes` | Named volumes, created in the service's engine as `<project>_<name>`. |
 | `x-*` | Ignored, for anchors. |
 
 `--runtime` on the command line forces every service onto one runtime.
 
-## networks
-
-Gantry does not build bridges or NAT. A network is a parent interface on
-the host, and each pod gets its own macvlan or ipvlan link on it with its own
-address on the LAN.
-
-```yaml
-networks:
-  lan:
-    driver: macvlan          # macvlan (default) or ipvlan
-    driver_opts:
-      parent: vlan4          # required; also accepted as `parent:` directly
-      mode: bridge           # macvlan: bridge, private, vepa, passthru; ipvlan: l2, l3, l3s
-      mtu: 1500              # optional; also accepted as `mtu:` directly
-    ipam:
-      config:
-        - subnet: 192.0.2.216/29
-          gateway: 192.0.2.222
-```
-
-The `subnet` gives bare addresses their prefix length. The `gateway` becomes
-the default route of pods on this network.
-
-A parent can carry macvlan links or ipvlan links, not both at once (a kernel
-rule).
+A top-level `networks:` section is an error. Gantry 0.2 and earlier used
+one. Move each network's parent and subnet into the pods that use it (see
+below).
 
 ## pods (extension)
 
 ```yaml
 pods:
   web:
+    network:
+      - parent: vlan4                     # required: the host interface
+        address: 192.0.2.218/29           # required: address with prefix, or dhcp
+        # driver: ipvlan                  # macvlan (default) or ipvlan
+        # gateway: 192.0.2.222            # default: first host of the subnet
+        # address6: 2001:db8::10/64       # optional static IPv6 address
+        # gateway6: fe80::1               # default: from router advertisements
+        # interface: eth0                 # default: eth0, eth1, ... in order
+        # default_route: true             # default: the first entry
+        # mac_address: 02:00:00:00:00:10  # macvlan only; default is a stable MAC
     hostname: web               # default: the pod name
     domainname: example.com     # optional
     share: [uts, ipc]           # default; net is always shared
     ipv6: true                  # false disables IPv6 in the pod
     runtime: podman             # default runtime for services in this pod
-    networks:
-      lan:
-        ipv4_address: 192.0.2.218        # bare address takes the subnet prefix
-        # ipv6_address: 2001:db8::10/64
-        # addresses: [10.0.0.5/24]        # extension: any number, with prefix
-        # dhcp: true                      # extension: lease IPv4 with DHCP
-        # mac_address: 02:00:00:00:00:10  # macvlan only; default is a stable MAC
-        # default_route: true             # extension: which network carries the default route
-        # gateway: 192.0.2.222           # extension: override the subnet gateway
-        # interface: eth0                 # extension: name inside the pod (eth0, eth1, ...)
     dns: [1.1.1.1]              # default: the lease's servers, else the host's upstream servers
     dns_search: [example.com]
     dns_opt: [ndots:2]
@@ -87,14 +65,39 @@ pods:
     firewall: { ... }           # see below
 ```
 
-Every pod network needs an address: `ipv4_address`, `addresses` or
-`dhcp: true`. Gantry never picks LAN addresses on its own.
+### network
 
-With macvlan, a pod's MAC is derived from the project, pod and network names,
-so it keeps the same MAC (and DHCP lease) across restarts. Gantry sends
-gratuitous ARP when it assigns an address so the LAN forgets stale entries.
+`network` is a list. Each entry becomes one interface in the pod: a macvlan
+or ipvlan link on `parent`, with its own address on the LAN. Gantry builds
+no bridges and no NAT. A pod with two VLANs lists two entries.
 
-The first network carries the default route unless another sets
+* **parent** is the host interface, normally a VLAN interface such as
+  `vlan4`. Required.
+* **address** is required. Give an IPv4 address with its prefix length
+  (`10.10.10.10/24`), or `dhcp` to lease one from the LAN's DHCP server.
+  Gantry never picks an address on its own. An address without a prefix,
+  or one that is its subnet's network, broadcast or gateway address, is an
+  error.
+* **gateway** defaults to the first host of the address's subnet:
+  `10.10.10.1` for `10.10.10.10/24`. Set it when the gateway is elsewhere.
+  A `/31` or `/32` has no first host, so it needs `gateway:`. DHCP entries
+  take the gateway from the lease.
+* **driver** is `macvlan` (the default) or `ipvlan`. macvlan links run in
+  `bridge` mode, so pods on the same parent reach each other. ipvlan links
+  run in `l2` mode and share the parent's MAC, for switch ports that allow
+  one MAC. A parent carries macvlan links or ipvlan links, not both (a
+  kernel rule), so a project that mixes them on one parent is an error.
+* **address6** adds a static IPv6 address with prefix. Its gateway is
+  `gateway6`, or the router advertisements on the LAN when that is omitted.
+  `address6` together with `dhcp` is not supported yet.
+* Links inherit the parent's MTU.
+
+With macvlan, a pod's MAC is derived from the project, pod and interface
+names, so it keeps the same MAC (and DHCP lease) across restarts. Gantry
+sends gratuitous ARP when it assigns an address so the LAN forgets stale
+entries.
+
+The first entry carries the default route unless another sets
 `default_route: true`.
 
 ### What the pod shares
@@ -120,21 +123,21 @@ All services in a pod share:
 
 ## firewall (extension)
 
-A pod with a `firewall` section gets an nftables table (`inet gantry`)
-inside its own network namespace. The host's rules are never touched. A pod
-without a `firewall` section is open.
+Every pod gets an nftables table (`inet gantry`) inside its own network
+namespace, whether or not it has a `firewall` section. The host's rules are
+never touched.
 
 ```yaml
 firewall:
   policy:
-    input: drop        # default drop (accept, drop, reject)
+    input: accept      # default accept (accept, drop, reject)
     output: accept     # default accept
-  allow_ping: true     # default true
+  defaults: true       # default true; see below
   log_dropped: false   # log dropped packets (rate limited) with prefix "gantry <pod> in drop:"
   input:
     - proto: tcp                 # tcp, udp, icmp, icmpv6, any, or a list
       port: 443                  # or ports: [80, 443, "8000-8100"]
-      from: [198.51.100.0/24, pod:web, service:nginx, network:lan, any]
+      from: [198.51.100.0/24, pod:web, service:nginx, subnet, any]
       action: accept             # default accept
       interface: eth0            # optional
       limit: 10/second           # optional
@@ -144,42 +147,68 @@ firewall:
     - { to: 192.168.0.0/16, action: reject }
 ```
 
-Always allowed, before your rules: loopback (intra-pod traffic), established
-and related connections, IPv6 neighbor discovery, essential ICMP errors, and
-DHCP replies on DHCP pods.
+### The default policy
 
-Peers:
+With `defaults: true`, which is the default, the input chain is:
+
+1. Always allowed: loopback (intra-pod traffic), established and related
+   connections, IPv6 neighbor discovery, essential ICMP errors, and DHCP
+   replies on DHCP pods.
+2. Any ICMP and ICMPv6, accepted.
+3. The pod's own `input` rules, then the ports opened by `ports:` and
+   `expose:`.
+4. Everything from the pod's own subnet (`subnet`), rejected.
+5. The input policy, `accept` unless set.
+
+A pod with no `firewall` section gets exactly this. Neighbors on the same
+VLAN cannot reach the pod, since that traffic never crosses a router and
+nothing else would stop it. Traffic from other subnets is routed, and the
+upstream firewall decides what reaches the pod.
+
+To let a neighbor in, add a rule for it. Your rules come before the subnet
+reject:
+
+```yaml
+firewall:
+  input:
+    - { proto: any, from: [192.0.2.219], comment: "VRRP peer" }
+```
+
+Set `defaults: false` to write the whole policy yourself. Steps 2 and 4 are
+then left out, and step 1 still applies.
+
+### Peers
 
 | Peer | Matches |
 |---|---|
 | `any` or omitted | everyone |
+| `subnet` | the subnets of the pod's own addresses: `10.10.10.0/24` for `10.10.10.10/24`. For DHCP entries, the subnet of the current lease. |
 | `10.0.0.0/8`, `2001:db8::/32`, `10.0.0.5` | that network or host |
 | `pod:<name>` | that pod's current addresses (DHCP leases included) |
 | `service:<name>` | the pod that service runs in |
-| `network:<name>` | the network's subnets |
 
 A rule with `port` and no `proto` is TCP.
 
 Service `ports:` and `expose:` feed the firewall:
 
-* `ports: ["80", "443/tcp"]` opens those ports to everyone. A host mapping
-  like `"8080:80"` has no meaning for a pod on the LAN; Gantry opens the
-  container port (80) and warns.
+* `ports: ["80", "443/tcp"]` opens those ports to everyone, including the
+  pod's own subnet. A host mapping like `"8080:80"` has no meaning for a
+  pod on the LAN; Gantry opens the container port (80) and warns.
 * `expose: ["5432"]` opens the port to the project's other pods only.
 
-Rules that name pods are rendered from the addresses known at the time. When
-a DHCP pod's address changes, its agent refreshes every pod's hosts file and
-firewall; `gantry firewall reload` does the same by hand. A deny rule
-whose pod has no address yet is an error rather than being skipped.
+Rules that name pods, and `subnet`, are rendered from the addresses known
+at the time. When a DHCP pod's address changes, its agent refreshes every
+pod's hosts file and firewall; `gantry firewall reload` does the same by
+hand. A deny rule whose pod has no address yet is an error rather than being
+skipped. The default subnet reject on a DHCP pod waits for the first lease.
 
 ## services
 
-A service runs in the pod named by `pod:`. A service without `pod:` gets a
-pod of its own, named after the service, built from the service's
-`networks`, `hostname`, `domainname`, `mac_address`, `dns`, `dns_search`,
-`dns_opt`, `extra_hosts`, `firewall` (extension) and `net.*` sysctls. That
-keeps ordinary Compose files working. Setting those keys on a service that
-also has `pod:` is an error: they belong to the pod.
+A service runs in the pod named by `pod:`. When the project has exactly one
+pod, `pod:` can be left out. With more than one pod it is required.
+Settings that shape the pod (`networks`, `hostname`, `domainname`,
+`mac_address`, `dns`, `dns_search`, `dns_opt`, `extra_hosts`, `firewall`,
+`ipc`) are an error on a service: set them under `pods:`.
 
 `network_mode: service:<other>` (or `container:<other>`) puts the service in
 the other service's pod. `network_mode: none` gives it a pod with loopback
