@@ -157,9 +157,25 @@ sudo install -m 0600 .env /etc/gantry/myproject/      # if the project has one
 sudo systemctl enable --now gantry@myproject
 ```
 
-Keep the project directory for the project file and `.env` only, owned by
-root. Put container data elsewhere, on storage chosen for it, and bind mount
-it by absolute path:
+The project can also live next to its data, on another disk or an NFS
+mount, so it moves with the data. Keep it there and make
+`/etc/gantry/<name>` a symlink to it:
+
+```sh
+sudo install -d -m 0755 /mnt/storage/myproject
+sudo install -m 0644 gantry.yaml /mnt/storage/myproject/
+sudo install -m 0600 .env /mnt/storage/myproject/
+sudo ln -s /mnt/storage/myproject /etc/gantry/myproject
+sudo systemctl enable --now gantry@myproject
+```
+
+The unit starts after `remote-fs.target`, so NFS mounts are up first. On
+NFS, root must keep root ownership (the export cannot squash root), or
+remote control refuses the project.
+
+Keep the project file, `.env` and data owned by root and not writable by a
+group or others. Container data can sit beside the project file, or
+elsewhere on storage chosen for it, bind mounted by absolute path:
 
 ```yaml
 services:

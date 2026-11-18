@@ -48,7 +48,7 @@ way `ip netns add` does, and every container joins them by path.
 
 ## Status
 
-Version 0.3.0, rapid development. Tested on Debian 13 (kernel 6.12) with
+Version 0.3.1, rapid development. Tested on Debian 13 (kernel 6.12) with
 Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
 
 ## Install

@@ -1,10 +1,12 @@
 # Brings a Gantry project up at boot and down at shutdown.
-# Put the project in /etc/gantry/<name>/gantry.yaml, then:
+# Put the project in /etc/gantry/<name>/gantry.yaml (or make
+# /etc/gantry/<name> a symlink to the project's directory), then:
 #   systemctl enable --now gantry@<name>
 [Unit]
 Description=Gantry project %i
-Wants=network-online.target
-After=network-online.target docker.service podman.socket kiri.service
+# remote-fs.target: projects may live on NFS, next to their data.
+Wants=network-online.target remote-fs.target
+After=network-online.target remote-fs.target docker.service podman.socket kiri.service
 ConditionPathIsDirectory=/etc/gantry/%i
 
 [Service]
