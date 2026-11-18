@@ -13,6 +13,7 @@ pub mod errors;
 pub mod firewall;
 pub mod pod;
 pub mod project;
+pub mod redact;
 pub mod util;
 
 pub use errors::{Error, Result};

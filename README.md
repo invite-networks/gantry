@@ -151,7 +151,7 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 | `kill [-s SIG] [svc...]`, `rm [-s] [svc...]` | Signal services; remove stopped service containers. |
 | `top [svc...]` | Processes in each service. |
 | `build [svc...]`, `pull [svc...]` | Build or pull images. Pulls run in parallel. |
-| `config [--services\|--pods\|--json]` | Validate and print the normalized project. |
+| `config [--services\|--pods\|--json]` | Validate and print the normalized project. Values that look like secrets print as `<redacted>`. |
 | `ls` | Projects with pods on this host. |
 | `pod ls`, `pod inspect POD`, `pod exec POD cmd...` | Pods, their addresses, state and DHCP leases; run a host command (`ip`, `tcpdump`, `nft`) in a pod's network namespace. |
 | `firewall show POD`, `firewall reload` | The generated ruleset and what is loaded; re-render hosts files and firewalls. |

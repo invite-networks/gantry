@@ -164,7 +164,7 @@ enum Cmd {
     Pull { services: Vec<String> },
     /// Build service images that have a build section
     Build { services: Vec<String> },
-    /// Validate and print the normalized project
+    /// Validate and print the normalized project, with likely secrets redacted
     Config {
         /// Print only service names
         #[arg(long)]
@@ -406,6 +406,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             json,
         } => {
             let o = load_project(&g)?;
+            let shown = gantry::redact::redacted(&o.project);
             if services {
                 o.project.services.keys().for_each(|s| println!("{s}"));
             } else if pods {
@@ -413,13 +414,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             } else if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&o.project)
+                    serde_json::to_string_pretty(&shown)
                         .map_err(|e| Error::State(e.to_string()))?
                 );
             } else {
                 print!(
                     "{}",
-                    serde_norway::to_string(&o.project).map_err(|e| Error::State(e.to_string()))?
+                    serde_norway::to_string(&shown).map_err(|e| Error::State(e.to_string()))?
                 );
             }
             Ok(ExitCode::SUCCESS)
