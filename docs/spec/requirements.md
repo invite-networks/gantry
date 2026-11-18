@@ -77,6 +77,8 @@ Priority: **M** must, **S** should, **C** could.
 | FR-POD-03 | Gantry shall set the pod hostname and optional domain name inside the shared UTS namespace. | M |
 | FR-POD-04 | Pods shall run without an infra or pause container. Containers join the pinned namespaces by path. | M |
 | FR-POD-05 | All services in a pod shall share the network namespace and reach each other on `127.0.0.1`. | M |
+| FR-POD-11 | A top-level `pod:` shall define the project's only pod, named after the project. `pod:` together with `pods:` shall be rejected. | S |
+| FR-POD-12 | A project name shall run from one directory at a time: every command shall refuse a project whose name has pods running from another directory. `up` shall refuse a static address that a pod of another project on the host holds (static or leased). | M |
 | FR-POD-06 | A service without `pod:` shall join the project's pod when there is exactly one, and be rejected otherwise. `network_mode: service:<x>` or `container:<x>` shall place it in the other service's pod. `network_mode: none` shall give it a loopback-only pod. Pod settings (networks, hostname, DNS, firewall and similar) on a service shall be rejected. | M |
 | FR-POD-07 | Gantry shall recreate a pod, and the containers in it, when its shape changes (addresses, networks, hostname, shared namespaces, sysctls). Firewall and hosts changes shall be applied without a recreate. | M |
 | FR-POD-08 | Gantry shall apply pod `net.*` sysctls to the pod namespace and set `net.ipv4.ip_unprivileged_port_start=0` and `net.ipv4.ping_group_range=0 2147483647` unless the pod overrides them. | M |

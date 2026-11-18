@@ -26,6 +26,7 @@ from the environment first, then from `.env` in the project directory (or
 | `name` | Project name. Default: `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. |
 | `runtime` | **Extension.** Default runtime for services: `docker` (default), `podman` or `kiri`. |
 | `pods` | **Extension.** The pods, each with its own network interfaces and firewall. |
+| `pod` | **Extension.** The project's only pod, without a name: it takes the project's name (and so its hostname). Use `pod` or `pods`, not both. |
 | `services` | Containers. Each runs in exactly one pod. |
 | `volumes` | Named volumes, created in the service's engine as `<project>_<name>`. |
 | `x-*` | Ignored, for anchors. |
@@ -37,6 +38,24 @@ one. Move each network's parent and subnet into the pods that use it (see
 below).
 
 ## pods (extension)
+
+A project with one pod can skip naming it. A top-level `pod:` takes the
+same keys as an entry under `pods:`, and the pod is named after the
+project:
+
+```yaml
+name: shop
+pod:
+  network: [{ parent: vlan4, address: 192.0.2.218/29, gateway: 192.0.2.222 }]
+services:
+  web: { image: nginx }        # joins pod "shop"
+  worker: { image: worker }
+```
+
+Pod names and addresses are per project. Two projects never share a pod,
+even when their pods have the same name, and they reach each other over the
+LAN. Gantry refuses to bring up a project whose static address another
+project's pod on the host already holds.
 
 ```yaml
 pods:
@@ -206,7 +225,8 @@ skipped. The default subnet reject on a DHCP pod waits for the first lease.
 ## services
 
 A service runs in the pod named by `pod:`. When the project has exactly one
-pod, `pod:` can be left out. With more than one pod it is required.
+pod, from `pod:` or `pods:`, `pod:` on the service can be left out. With
+more than one pod it is required, and a service without it is an error.
 Settings that shape the pod (`networks`, `hostname`, `domainname`,
 `mac_address`, `dns`, `dns_search`, `dns_opt`, `extra_hosts`, `firewall`,
 `ipc`) are an error on a service: set them under `pods:`.

@@ -99,11 +99,10 @@ For kiri, see `contrib/kiri`.
 # gantry.yaml
 name: demo
 
-pods:
-  web:
-    network:
-      - parent: eth0                 # host interface
-        address: 192.168.10.50/24    # gateway defaults to 192.168.10.1
+pod:                               # the only pod, named "demo" after the project
+  network:
+    - parent: eth0                   # host interface
+      address: 192.168.10.50/24      # gateway defaults to 192.168.10.1
 
 services:
   nginx:
@@ -113,7 +112,7 @@ services:
     runtime: podman
 ```
 
-With one pod, services join it without `pod:`. The pod gets the default
+With one pod there is nothing to name: services join it. The pod gets the default
 firewall: any ICMP is accepted, everything else from `192.168.10.0/24` is
 rejected, and other traffic is left to your router's firewall. Add `input`
 rules to let neighbors in, or `defaults: false` to write the whole policy

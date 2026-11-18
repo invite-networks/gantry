@@ -156,6 +156,13 @@ which continues where it stopped.
 | `image ... is not present and pull_policy is never` | Image missing. | `gantry pull` or change the policy. |
 | Pod has no address with `dhcp: true` | No lease yet. | See 2.3. |
 
+### 2.1a Projects that collide
+
+| Error | Cause | Fix |
+|---|---|---|
+| `project NAME is already running from DIR; this one is in ...` | Two project directories use the same `name:`. Gantry keys pods and state by name, so it will not let the second touch the first's pods. | Give one of them a different `name:`, or `down` the running one first. |
+| `pod P: address A is in use by pod Q of project R on this host` | Two projects were given the same static address. | Reserve another address in Nautobot and change one of them. |
+
 ### 2.2 Pod not reachable from the LAN
 
 1. Confirm the address: `gantry pod exec <pod> ip addr`.

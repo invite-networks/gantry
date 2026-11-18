@@ -87,10 +87,20 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         );
     }
 
-    // Explicit pods.
+    // Explicit pods. A top-level `pod:` is the only pod, named after the
+    // project.
+    let mut raw_pods = f.pods;
+    if let Some(p) = f.pod {
+        if !raw_pods.is_empty() {
+            return Err(Error::config(
+                "use pod: for a single pod or pods: for several, not both",
+            ));
+        }
+        raw_pods.insert(name.clone(), Some(p));
+    }
     let mut pods: IndexMap<String, Pod> = IndexMap::new();
     let mut pod_runtimes: IndexMap<String, RuntimeKind> = IndexMap::new();
-    for (pod_name, p) in f.pods {
+    for (pod_name, p) in raw_pods {
         check_name(&pod_name, "pod")?;
         let p = p.unwrap_or_default();
         if let Some(key) = p.extra.keys().next() {
@@ -1649,6 +1659,24 @@ mod tests {
         assert_eq!(b.ifname, "mgmt");
         assert_eq!(b.addressing, Addressing::Dhcp);
         assert!(b.default_route);
+    }
+
+    #[test]
+    fn single_unnamed_pod() {
+        let p = try_load(
+            "name: shop\npod:\n  network: [{ parent: eth9, address: 192.0.2.5/24 }]\nservices:\n  web: { image: x }\n  db: { image: y }\n",
+        )
+        .unwrap();
+        assert_eq!(p.pods.keys().collect::<Vec<_>>(), vec!["shop"]);
+        assert_eq!(p.pods["shop"].hostname, "shop");
+        assert_eq!(p.services["web"].pod, "shop");
+        assert_eq!(p.services["db"].pod, "shop");
+        let e = try_load(&format!(
+            "name: shop\npod:\n  network: [{{ parent: eth9, address: 192.0.2.6/24 }}]\n{POD}services: {{}}\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("not both"), "{e}");
     }
 
     #[test]

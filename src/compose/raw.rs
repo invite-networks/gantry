@@ -59,6 +59,9 @@ pub struct File {
     pub services: IndexMap<String, Service>,
     #[serde(default)]
     pub pods: IndexMap<String, Option<Pod>>,
+    /// Extension: the project's only pod, without a name (it takes the
+    /// project's name). Exclusive with `pods`.
+    pub pod: Option<Pod>,
     /// Not supported: networks are defined on each pod. Kept to say so.
     pub networks: Option<Value>,
     #[serde(default)]

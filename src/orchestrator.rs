@@ -200,6 +200,8 @@ impl Orchestrator {
     pub async fn up(&self, opts: &UpOptions) -> Result<()> {
         let order = self.up_order(&opts.services)?;
         let _lock = lock(&self.project.name)?;
+        guard_project_name(&self.project)?;
+        guard_addresses(&self.project)?;
         crate::datamove::refuse_unmoved(self, &order).await?;
         self.up_locked(opts).await
     }
@@ -822,6 +824,78 @@ pub fn describe_pod(st: &state::PodState) -> String {
     } else {
         parts.join(", ")
     }
+}
+
+/// Refuses a project whose name is already running from another
+/// directory: Gantry keys pods and state by project name, so the two would
+/// take over each other's pods.
+pub fn guard_project_name(project: &Project) -> Result<()> {
+    if state::list_pods(&project.name).is_empty() {
+        return Ok(());
+    }
+    let Ok(bytes) = std::fs::read(Project::snapshot_path(&project.name)) else {
+        return Ok(());
+    };
+    let Some(other) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| {
+            v.get("dir")
+                .and_then(|d| d.as_str())
+                .map(std::path::PathBuf::from)
+        })
+    else {
+        return Ok(());
+    };
+    let same = match (other.canonicalize(), project.dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => other == project.dir,
+    };
+    if same {
+        return Ok(());
+    }
+    Err(Error::State(format!(
+        "project {} is already running from {}; this one is in {}. Give it a different name: in its project file",
+        project.name,
+        other.display(),
+        project.dir.display()
+    )))
+}
+
+/// Refuses static addresses that a pod of another project on this host
+/// holds (static or leased): both would answer on the LAN.
+pub fn guard_addresses(project: &Project) -> Result<()> {
+    let mut mine: IndexMap<std::net::IpAddr, &str> = IndexMap::new();
+    for pod in project.pods.values() {
+        for a in &pod.attachments {
+            if let crate::project::Addressing::Static(addrs) = &a.addressing {
+                for n in addrs {
+                    mine.insert(n.addr(), &pod.name);
+                }
+            }
+        }
+    }
+    if mine.is_empty() {
+        return Ok(());
+    }
+    for other in state::list_projects() {
+        if other == project.name {
+            continue;
+        }
+        for pod in state::list_pods(&other) {
+            let Some(st) = state::PodState::load(&other, &pod)? else {
+                continue;
+            };
+            for n in st.addresses() {
+                if let Some(mine_pod) = mine.get(&n.addr()) {
+                    return Err(Error::config(format!(
+                        "pod {mine_pod}: address {} is in use by pod {pod} of project {other} on this host",
+                        n.addr()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An exclusive lock on the project's run directory, held while a

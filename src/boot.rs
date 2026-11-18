@@ -110,7 +110,7 @@ fn load_all() -> Vec<Loaded> {
             ..Default::default()
         };
         match load(&opts) {
-            Ok(l) => {
+            Ok(l) if gantry_guard(&name, &l.project) => {
                 for w in &l.warnings {
                     tracing::warn!("{name}: {w}");
                 }
@@ -119,10 +119,21 @@ fn load_all() -> Vec<Loaded> {
                     orch: Orchestrator::new(l.project),
                 });
             }
+            Ok(_) => {}
             Err(e) => eprintln!("{name}: skipped: {e}"),
         }
     }
     out
+}
+
+fn gantry_guard(name: &str, project: &crate::project::Project) -> bool {
+    match crate::orchestrator::guard_project_name(project) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("{name}: skipped: {e}");
+            false
+        }
+    }
 }
 
 /// Priority -> (project index, pod names).

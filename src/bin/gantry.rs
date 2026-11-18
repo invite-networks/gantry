@@ -415,6 +415,9 @@ fn load_project(g: &Global) -> Result<Orchestrator> {
     for w in &loaded.warnings {
         tracing::warn!("{w}");
     }
+    // Every command acts on pods by project name, so a name already running
+    // from another directory is refused up front.
+    gantry::orchestrator::guard_project_name(&loaded.project)?;
     Ok(Orchestrator::new(loaded.project))
 }
 
