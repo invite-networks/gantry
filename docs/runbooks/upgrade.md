@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.1.x |
+| Applies to | Gantry 0.2.x |
 | Validation | Planned, not yet executed. |
 
 ## Upgrade

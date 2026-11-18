@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.1.x, with the Docker Engine API engine layer |
+| Version covered | 0.2.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 

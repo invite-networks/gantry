@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.1.x with the Docker Engine API engine layer |
+| Applies to | Gantry 0.2.x with the Docker Engine API engine layer |
 | Validation | Commands match the CLI as built. Error texts for the API engine layer are planned, not yet executed. |
 
 All commands run as root from the project directory (or with `-f` and

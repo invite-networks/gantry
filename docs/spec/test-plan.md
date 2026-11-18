@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.1.x, with the Docker Engine API engine layer |
+| Version covered | 0.2.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Design](design.md) |
 
@@ -17,7 +17,7 @@ Gantry is tested at three levels:
 | Integration | The live suite in `tests/integration/run.sh`: real namespaces, links, nftables, DHCP and engines. | A Linux test host | Yes |
 | Manual | Scenarios that need a real LAN or are hard to automate (reboot, live DHCP address change, mixed-runtime examples). | A Linux test host on a LAN segment | Yes |
 
-Version 0.1.x is rapid development. Failing tests may be rewritten when
+Version 0.x is rapid development. Failing tests may be rewritten when
 behavior changes on purpose. No tests are marked as regression tests yet.
 
 ## 2. Environments

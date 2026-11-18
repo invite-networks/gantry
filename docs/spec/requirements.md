@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.1.x (rapid development) |
+| Version covered | 0.2.x (rapid development) |
 | Status | Draft for review |
 | Related | [Design](design.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
