@@ -4,7 +4,7 @@
 |---|---|
 | Owner | Host operator (root) |
 | Applies to | Gantry 0.1.x with the Docker Engine API engine layer |
-| Validation | Planned, not yet executed against the API engine layer. The build, shim and kiri steps match what was run on the reference host with the earlier CLI engine. |
+| Validation | On the Debian 13 reference host (2026-11-16): the .deb installed with `apt`, and a pod with Docker, Podman and kiri services ran through the API engine layer. The .deb was built locally, not fetched from the apt repository. Steps 3 to 5 were done on that host before the .deb existed. |
 
 ## 1. Prerequisites
 
@@ -15,7 +15,8 @@
   subnet and gateway on the LAN, and free addresses or a DHCP server.
 * At least one engine: Docker Engine, Podman 5, or kiri 0.2 with the
   `contrib/kiri` patch.
-* To build Gantry: a Rust toolchain matching `rust-toolchain.toml`.
+* To build Gantry from source (section 2b): a Rust toolchain matching
+  `rust-toolchain.toml`.
 * For projects that use `build:`: the `docker` CLI (Docker and kiri) or the
   `podman` CLI.
 
@@ -26,16 +27,46 @@ not needed. Gantry talks to each engine's API socket.
 
 Trigger: new host, or first use on a host.
 
+### 2a. From the apt repository (recommended)
+
+Packages are built for amd64 on Debian and Ubuntu.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://invite-networks.github.io/apt/invite-networks.asc |
+  sudo tee /etc/apt/keyrings/invite-networks.asc >/dev/null
+sudo tee /etc/apt/sources.list.d/invite-networks.sources >/dev/null <<'SRC'
+Types: deb
+URIs: https://invite-networks.github.io/apt
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/invite-networks.asc
+SRC
+sudo apt update
+sudo apt install gantry
+```
+
+Validate: `gantry --version` prints the version.
+
+The package installs `gantry` and `gantry-oci` in `/usr/bin`, the
+`gantry@.service` unit, the man page and shell completions. It also sets up
+the restricted `gantry` account for remote control over SSH, which cannot
+log in until a key is added; see [remote](remote.md).
+
+### 2b. From source
+
+For hosts without the package, or to test a change:
+
 ```sh
 cargo build --release
 sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
-gantry --version
+sudo install -m 644 contrib/systemd/gantry@.service /etc/systemd/system/
+sudo systemctl daemon-reload
 ```
 
-Expected: both binaries in `/usr/local/bin`, version printed.
-
-The .deb also sets up the restricted `gantry` account for remote control
-over SSH. It cannot log in until a key is added; see [remote](remote.md).
+`cargo deb` builds the same .deb the repository serves. Do not mix the two
+installs on one host: `/usr/local/bin` comes first in `PATH`, so a stale
+source build hides the packaged one.
 
 ## 3. Set up Docker
 
@@ -114,20 +145,35 @@ Expected: `OK`. If kiri listens elsewhere, set `GANTRY_KIRI_HOST`.
 
 ## 6. Run a project at boot
 
-Pods live under `/run`, so they are gone after a reboot. The template unit
-brings a project up at boot and down at shutdown.
+Pods live under `/run`, so they are gone after a reboot. The
+`gantry@.service` template unit brings a project up at boot and down at
+shutdown. Each project is a directory under `/etc/gantry`:
 
 ```sh
-sudo mkdir -p /etc/gantry/myproject
-sudo cp gantry.yaml /etc/gantry/myproject/
-sudo cp contrib/systemd/gantry@.service /etc/systemd/system/
-sudo systemctl daemon-reload
+sudo install -d -m 0755 /etc/gantry/myproject
+sudo install -m 0644 gantry.yaml /etc/gantry/myproject/
+sudo install -m 0600 .env /etc/gantry/myproject/      # if the project has one
 sudo systemctl enable --now gantry@myproject
 ```
 
-The unit orders itself after `network-online.target`, `docker.service` and
-`kiri.service`. For Podman projects, add a drop-in with
-`After=podman.socket` and `Wants=podman.socket`.
+Keep the project directory for the project file and `.env` only, owned by
+root. Put container data elsewhere, on storage chosen for it, and bind mount
+it by absolute path:
+
+```yaml
+services:
+  db:
+    volumes:
+      - ${DATA_DIR}/db:/var/lib/postgresql/data
+```
+
+with `DATA_DIR=/srv/myproject` (or wherever the host keeps data) in the
+project's `.env`. Data then survives the project being replaced, backups can
+cover one data tree, and remote control's ownership checks stay simple.
+Prefer bind mounts to named volumes, which hide data inside the engine.
+
+The unit orders itself after `network-online.target`, `docker.service`,
+`podman.socket` and `kiri.service`.
 
 Validate: `systemctl status gantry@myproject` is active, and
 `cd /etc/gantry/myproject && sudo gantry pod ls` lists the pods.
@@ -167,8 +213,6 @@ Trigger: removing Gantry from a host.
 
    ```sh
    sudo systemctl disable --now 'gantry@*'
-   sudo rm /etc/systemd/system/gantry@.service
-   sudo systemctl daemon-reload
    ```
 3. Remove the Docker runtime: delete the `gantry` entry under `runtimes`
    in `/etc/docker/daemon.json` and `sudo systemctl reload docker`. Do this
@@ -176,10 +220,14 @@ Trigger: removing Gantry from a host.
    them.
 4. Optionally disable the Podman socket if nothing else uses it:
    `sudo systemctl disable --now podman.socket`.
-5. Remove binaries and leftovers:
+5. Remove the package and leftovers. `purge` also removes the `gantry`
+   account, its keys and the sshd and sudoers drop-ins:
 
    ```sh
-   sudo rm /usr/local/bin/gantry /usr/local/bin/gantry-oci
+   sudo apt purge gantry
+   # source installs instead:
+   # sudo rm /usr/local/bin/gantry /usr/local/bin/gantry-oci /etc/systemd/system/gantry@.service
+   # sudo systemctl daemon-reload
    ip netns list | grep '^gt-'          # should print nothing
    sudo rm -rf /run/gantry
    ```

@@ -4,7 +4,7 @@
 |---|---|
 | Owner | Host operator (root) |
 | Applies to | Gantry 0.1.x installed from the .deb |
-| Validation | Package install, the restricted account, every refusal and purge tested in a Debian 13 container (`tests/packaging/remote.sh`, 40 checks); sshd scoping also checked on Debian 12 and Ubuntu 22.04. Not yet run against a live engine on the reference host. |
+| Validation | Package install, the restricted account, every refusal and purge tested in a Debian 13 container (`tests/packaging/remote.sh`, 40 checks); sshd scoping also checked on Debian 12 and Ubuntu 22.04. Live run on the Debian 13 reference host (2026-11-16): Docker, Podman and kiri in one pod, every command in section 3, the refusals in sections 3 and 4, and key revocation. |
 
 Gantry has to run on the host that runs the containers, as root. To drive
 it from another machine, the package sets up a `gantry` account that can log
@@ -117,7 +117,8 @@ else is refused before a shell or sudo is involved.
   is writable by others.
 
 Data directories owned by container users (for example `./data` owned by
-uid 999 for a database) are fine. A project the `gantry` account could
+uid 999 for a database) are fine, though data is better kept outside the
+project directory (see [install](install.md#6-run-a-project-at-boot)). A project the `gantry` account could
 change is not.
 
 ## 5. Security notes
@@ -129,6 +130,10 @@ change is not.
   account write access to `/etc/gantry`.
 * **Do not add `gantry` to the `docker` group** or give it other sudo
   rules. Either one is a root path around `gantry-run`.
+* **`config` hides likely secrets.** Environment values and build
+  arguments whose names look secret (`*_KEY`, `*PASSWORD*`, `*TOKEN*` and
+  similar), and passwords inside URLs, print as `<redacted>`. `logs` still
+  shows whatever the containers print.
 * **Audit.** sshd logs which key logged in (its fingerprint). `gantry-ssh`
   logs the source address and request, and `gantry-run` and sudo log the
   command run, all to the auth log (`journalctl -t gantry-run -t gantry-ssh -t sudo`).
@@ -136,6 +141,9 @@ change is not.
 ## 6. Revoke access or disable it
 
 * One caller: delete their line from `/etc/gantry/remote/authorized_keys`.
+* Keys are checked only at login. A connection that is already open (a
+  `logs -f`, or a client multiplexing with `ControlMaster`) keeps working
+  until it closes. To cut them off now: `sudo pkill -u gantry`.
 * Every caller on a host: empty the file (`sudo truncate -s 0 /etc/gantry/remote/authorized_keys`).
   The account stays but cannot log in.
 * Remove everything: `sudo apt purge gantry` removes the account, the key
@@ -152,3 +160,4 @@ change is not.
 | `... is not owned by root or is writable by a group or others` | Fix the path named: `sudo chown root:root <path>` and `sudo chmod go-w <path>`. Do not `chown -R` the project, which would break container data directories. |
 | `... is not available remotely` | By design; see section 3. |
 | `PTY allocation request failed` | Harmless. The account never gets a TTY; the command still runs. |
+| `ls` shows a name that `ssh gantry@host <name> ...` rejects | `ls` prints the project's `name:` from the Compose file; remote commands take the directory name under `/etc/gantry`. Keep the two the same. |
