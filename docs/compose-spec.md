@@ -210,6 +210,12 @@ Settings that shape the pod (`networks`, `hostname`, `domainname`,
 `mac_address`, `dns`, `dns_search`, `dns_opt`, `extra_hosts`, `firewall`,
 `ipc`) are an error on a service: set them under `pods:`.
 
+A service without `restart:` gets `restart: unless-stopped`, so its engine
+restarts it after a crash. systemd only runs `gantry up` at boot
+(`gantry@<name>.service`); it does not watch containers. Write
+`restart: "no"` (quoted) for a service that should stay down when it exits,
+such as a one-shot migration.
+
 `network_mode: service:<other>` (or `container:<other>`) puts the service in
 the other service's pod. `network_mode: none` gives it a pod with loopback
 only.

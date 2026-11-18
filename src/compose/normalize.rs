@@ -383,6 +383,9 @@ impl Service {
     }
 }
 
+/// The restart policy of a service that sets none. `restart: "no"` opts out.
+pub const DEFAULT_RESTART: &str = "unless-stopped";
+
 /// Internal marker removed before the project is returned to callers.
 const RUNTIME_EXPLICIT: &str = "io.gantry.internal.runtime-explicit";
 
@@ -1222,7 +1225,8 @@ fn service(
         user: s.user.map(raw::Scalar::into_string),
         labels,
         mounts,
-        restart: s.restart,
+        // Engines restart crashed services; systemd only runs `up` at boot.
+        restart: s.restart.or_else(|| Some(DEFAULT_RESTART.into())),
         healthcheck,
         depends_on,
         stop_signal: s.stop_signal,
@@ -1567,6 +1571,14 @@ mod tests {
         // The only pod takes services without pod:.
         assert_eq!(p.services["web"].pod, "p");
         assert_eq!(p.services["web"].container_name, "t-web-1");
+        // Services restart unless stopped, unless they say otherwise.
+        assert_eq!(p.services["web"].restart.as_deref(), Some("unless-stopped"));
+        let q = try_load(&format!(
+            "name: t\n{POD}services:\n  a: {{ image: x, restart: \"no\" }}\n  b: {{ image: x, restart: on-failure:3 }}\n"
+        ))
+        .unwrap();
+        assert_eq!(q.services["a"].restart.as_deref(), Some("no"));
+        assert_eq!(q.services["b"].restart.as_deref(), Some("on-failure:3"));
         // Every pod gets a firewall with the defaults on and input open.
         let fw = p.pods["p"].firewall.as_ref().unwrap();
         assert!(fw.defaults);
