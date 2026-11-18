@@ -139,6 +139,8 @@ no firewall).
 | Default route via gateway | e2e | FR-NET-05 |
 | nft table loaded in pod | e2e | FR-FW-01 |
 | Pod without a `firewall:` section gets the default rules | e2e | FR-FW-01 |
+| `data move` bind to bind and named volume to bind on Docker, Podman and kiri, with a writer running: data identical, no writes lost at cutover, second run is a no-op | manual (2026-11-18) | FR-CLI-17 |
+| `up` refuses a moved path before `data move`; a non-empty destination is refused | manual (2026-11-18) | FR-CLI-17, FR-CLI-18 |
 | Host has no `gantry` table | e2e | FR-FW-02, NFR-SEC-01 |
 | `ps` shows redis healthy | e2e | FR-CLI-05, FR-CLI-08 |
 | Docker restart keeps the pod (Docker only) | e2e | FR-ST-04 |

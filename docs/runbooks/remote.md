@@ -96,7 +96,7 @@ ssh gantry@host gantry myproject ps              # a leading "gantry" is ignored
 
 Not available remotely, because each one either destroys data or runs
 arbitrary commands as root: `down -v`, `exec`, `run`, `kill`, `rm`,
-`pod exec`, `firewall reload`, `setup`, and the `-f`, `-p`,
+`pod exec`, `firewall reload`, `setup`, `data move`, and the `-f`, `-p`,
 `--project-directory`, `--env-file`, `--profile` and `--runtime` flags. Use
 an admin login for those.
 

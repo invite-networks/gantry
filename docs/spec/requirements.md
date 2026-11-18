@@ -183,6 +183,8 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CLI-13 | `kill [-s SIG]`, `rm [-s]` and `top` shall signal services, remove stopped service containers, and list service processes. | S |
 | FR-CLI-14 | `ls` shall list projects with pods on the host; `version` shall report Gantry's version and each engine's version and API version. | S |
 | FR-CLI-15 | `completion <shell>` shall print shell completions; the package shall install completions for bash, zsh and fish and a man page. | S |
+| FR-CLI-17 | `data move` shall find every bind or volume mount whose running source differs from the project file, copy it to the new host path with rsync (`-aHAX --numeric-ids --sparse --delete`) in live passes, stop only the services that use it, run a final pass and a checksum verification, and recreate the services. It shall never delete the old data, refuse a destination that holds other data unless `--force`, and restart the services on the old data if the cutover fails. | S |
+| FR-CLI-18 | `up` shall refuse to recreate a service onto a new data path that is empty, or holds an unfinished move, while the old path has data. | M |
 | FR-CLI-16 | Services in the same dependency level shall be created and started in parallel; `down` and `stop` shall act on reverse levels in parallel; pulls shall run in parallel. | M |
 
 ### 5.9 State and lifecycle

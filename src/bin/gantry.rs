@@ -182,6 +182,9 @@ enum Cmd {
     /// Firewall commands
     #[command(subcommand, alias = "fw")]
     Firewall(FwCmd),
+    /// Service data commands
+    #[command(subcommand)]
+    Data(DataCmd),
     /// One time host setup for a runtime
     #[command(subcommand)]
     Setup(SetupCmd),
@@ -212,6 +215,36 @@ struct UpArgs {
     #[arg(long)]
     wait_timeout: Option<u64>,
     services: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum DataCmd {
+    /// Move data to the paths the project file now names, then recreate
+    /// the services that use it
+    ///
+    /// Change the path in the project file or .env first. The data is
+    /// copied with rsync while the services run, the services are stopped
+    /// for a final pass and a checksum check, then recreated on the new
+    /// path. The old data is kept.
+    Move {
+        /// Show what would move and stop
+        #[arg(long)]
+        dry_run: bool,
+        /// Live copy passes before the services stop
+        #[arg(long, default_value_t = 3)]
+        passes: u32,
+        /// Do not copy ACLs and extended attributes (for filesystems
+        /// without them)
+        #[arg(long)]
+        no_xattrs: bool,
+        /// Allow a destination that already holds data (it is replaced)
+        #[arg(long)]
+        force: bool,
+        /// Seconds to wait for each service to stop
+        #[arg(short = 't', long)]
+        timeout: Option<u64>,
+        services: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -627,6 +660,30 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Start { services } => {
             require_root()?;
             load_project(&g)?.start(&services).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Data(DataCmd::Move {
+            dry_run,
+            passes,
+            no_xattrs,
+            force,
+            timeout,
+            services,
+        }) => {
+            require_root()?;
+            let o = load_project(&g)?;
+            gantry::datamove::run(
+                &o,
+                &gantry::datamove::MoveOptions {
+                    services,
+                    passes,
+                    dry_run,
+                    xattrs: !no_xattrs,
+                    force,
+                    timeout,
+                },
+            )
+            .await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Stop { timeout, services } => {

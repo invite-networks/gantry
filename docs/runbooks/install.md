@@ -9,7 +9,8 @@
 ## 1. Prerequisites
 
 * Linux, kernel 6.x, root access. Reference: Debian 13, kernel 6.12.
-* `nftables` (the `nft` command), for pods with a firewall.
+* `nftables` (the `nft` command), for pod firewalls.
+* `rsync`, for `gantry data move`. The package depends on both.
 * `iproute2`, for operating and troubleshooting (`ip netns`, `ip -n`).
 * A parent interface for the pods, such as a VLAN interface, with a
   subnet and gateway on the LAN, and free addresses or a DHCP server.

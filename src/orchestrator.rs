@@ -199,6 +199,15 @@ impl Orchestrator {
 
     pub async fn up(&self, opts: &UpOptions) -> Result<()> {
         let order = self.up_order(&opts.services)?;
+        let _lock = lock(&self.project.name)?;
+        crate::datamove::refuse_unmoved(self, &order).await?;
+        self.up_locked(opts).await
+    }
+
+    /// `up` for a caller that already holds the project lock and has done
+    /// its own mount checks (`gantry data move`).
+    pub async fn up_locked(&self, opts: &UpOptions) -> Result<()> {
+        let order = self.up_order(&opts.services)?;
         let used: Vec<&Engine> = self
             .engines
             .values()
@@ -209,7 +218,6 @@ impl Orchestrator {
             })
             .collect();
         try_join_all(used.iter().map(|e| e.check())).await?;
-        let _lock = lock(&self.project.name)?;
 
         // Images first, so a failed pull leaves nothing half started.
         self.ensure_images(&order, opts.pull, opts.build).await?;

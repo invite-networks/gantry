@@ -167,6 +167,21 @@ The ruleset is loaded by running `nft -f -` inside the pod namespace
 (`pod::nft`), so the host's tables are never touched [FR-FW-02]. The `nft`
 CLI is kept on purpose for readable output (DECISIONS item 20).
 
+### 5.1 Moving data
+
+`datamove::plan` compares each service's running container (its mounts as
+the engine reports them, so a named volume's real mountpoint on any engine)
+with the project file. Every target whose source changed becomes a move,
+grouped by old and new path [FR-CLI-17]. `datamove::run` holds the project
+lock throughout: live rsync passes, `stop` of the services that use the
+data, a final pass, a `--checksum --dry-run` verification, then
+`up_locked` for those services. A `.gantry-move` marker sits in the
+destination until verification passes. `up` calls `refuse_unmoved` under
+the same lock, so it never recreates a service on an empty or half-copied
+path [FR-CLI-18]. rsync is a process rather than a library on purpose: it
+handles hard links, ACLs, extended attributes, sparse files and devices,
+and the package depends on it.
+
 ## 6. Engine layer
 
 ### 6.1 One API client for three runtimes

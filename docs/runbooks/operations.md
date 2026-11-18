@@ -83,6 +83,53 @@ curl -s --unix-socket /run/kiri/docker.sock http://d/_ping    # kiri
 Containers carry `io.gantry.*` labels (project, service, pod, pod-id,
 config-hash), so any Docker API client can filter on them.
 
+### Moving data
+
+Trigger: a service's data has to live somewhere else, for example from
+local disk to NFS, or out of a named volume onto a host path.
+
+The project file is the source of truth, so change it first and let
+`data move` make the data follow. Gantry runs rsync (the package depends on
+it).
+
+1. Change the path. Usually that is one variable in the project's `.env`
+   (`DATA_DIR=/new/path`). To leave a named volume, change `db:/data` to a
+   host path in the project file. The running containers keep using the old
+   location until the move.
+2. Check the plan:
+
+   ```sh
+   sudo gantry data move --dry-run
+   ```
+
+   It lists every mount whose running source differs from the file, and the
+   services that use it.
+3. Move:
+
+   ```sh
+   sudo gantry data move
+   ```
+
+   * Up to three rsync passes copy the data while the services run
+     (`--passes N` to change).
+   * Only the services that use the data are stopped. A final pass copies
+     what changed, and a checksum dry run must find no differences.
+   * The services are recreated on the new path.
+
+   Downtime is the final pass plus a restart. A destination that already
+   holds data is refused unless `--force` is given. If the destination
+   filesystem has no ACLs or extended attributes, rsync fails with
+   "Operation not supported"; rerun with `--no-xattrs`.
+4. Check the service, then remove the old data yourself. `data move` never
+   deletes it.
+
+Failure handling: if a pass or the verification fails after the services
+stopped, Gantry restarts them on the old data and leaves a `.gantry-move`
+marker in the destination. `up` refuses to start a service on a destination
+with that marker, or on an empty destination while the old path has data,
+so a half-copied path is never used. Fix the cause and rerun `data move`,
+which continues where it stopped.
+
 ## 2. Troubleshooting
 
 ### 2.1 Common errors

@@ -90,6 +90,21 @@ pub struct ContainerInfo {
     pub image: String,
     /// A `gantry run` container rather than the service's own.
     pub oneoff: bool,
+    /// Bind and volume mounts as the engine reports them.
+    pub mounts: Vec<MountInfo>,
+}
+
+/// One mount of a container: where its data lives on the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountInfo {
+    /// `bind`, `volume`, `tmpfs` and so on.
+    pub kind: String,
+    /// The volume name, for volume mounts.
+    pub name: Option<String>,
+    /// Host path of the data (a volume's mountpoint for volume mounts).
+    pub source: String,
+    /// Path inside the container.
+    pub destination: String,
 }
 
 /// The default API socket of each runtime, overridable with
@@ -564,6 +579,17 @@ fn container_info(c: &ContainerInspectResponse) -> ContainerInfo {
             .and_then(|c| c.image.clone())
             .unwrap_or_default(),
         oneoff: !label(exec::LABEL_ONEOFF).is_empty(),
+        mounts: c
+            .mounts
+            .iter()
+            .flatten()
+            .map(|m| MountInfo {
+                kind: m.typ.as_ref().map(ToString::to_string).unwrap_or_default(),
+                name: m.name.clone().filter(|n| !n.is_empty()),
+                source: m.source.clone().unwrap_or_default(),
+                destination: m.destination.clone().unwrap_or_default(),
+            })
+            .collect(),
     }
 }
 

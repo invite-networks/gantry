@@ -9,6 +9,7 @@
 )]
 
 pub mod compose;
+pub mod datamove;
 pub mod errors;
 pub mod firewall;
 pub mod pod;
