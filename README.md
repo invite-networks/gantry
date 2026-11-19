@@ -332,6 +332,13 @@ scripts/package.sh                                 # Debian package
 See [docs/compose-spec.md](docs/compose-spec.md) for the file format,
 and [docs/](docs/README.md) for requirements, design, test plan and runbooks.
 
+Clones made before 2026-11-19 still hold the earlier test tags, and `git
+fetch` will not replace their old `v0.1.0`. Refresh them once:
+
+```sh
+git tag -d $(git tag -l) && git fetch --tags origin
+```
+
 ## License
 
 MIT
