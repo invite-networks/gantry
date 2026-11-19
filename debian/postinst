@@ -32,19 +32,8 @@ if [ "$1" = configure ]; then
 	fi
 
 	# Boot: one gantry-boot.service starts registered projects in pod
-	# priority order. Gantry 0.3.1 and earlier enabled one gantry@<name>.service per
-	# project; register those projects instead and drop their links.
+	# priority order.
 	install -d -o root -g root -m 0700 /var/lib/gantry/boot
-	for link in /etc/systemd/system/multi-user.target.wants/gantry@*.service; do
-		[ -L "$link" ] || continue
-		name=${link##*/gantry@}
-		name=${name%.service}
-		case $name in
-		'' | -* | .* | *[!A-Za-z0-9._-]*) ;;
-		*) : >"/var/lib/gantry/boot/$name" ;;
-		esac
-		rm -f "$link"
-	done
 	if [ -d /run/systemd/system ]; then
 		systemctl daemon-reload 2>/dev/null || true
 	fi

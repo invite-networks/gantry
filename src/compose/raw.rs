@@ -114,8 +114,6 @@ pub struct Pod {
     pub share: Option<Vec<String>>,
     /// The pod's interfaces.
     pub network: Option<Vec<PodNetwork>>,
-    /// Not supported: replaced by `network`. Kept to say so.
-    pub networks: Option<Value>,
     pub dns: Option<StringOrList>,
     pub dns_search: Option<StringOrList>,
     pub dns_opt: Option<Vec<String>>,

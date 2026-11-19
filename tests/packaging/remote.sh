@@ -83,15 +83,9 @@ chmod 664 /etc/gantry/project-dirs; out=$($S demo2 config 2>&1) && bad "writable
 chmod 750 /mnt/container-local; dpkg-reconfigure gantry >/dev/null 2>&1
 [ "$(stat -c '%a' /mnt/container-local)" = 750 ] && ok "existing container-local untouched" || bad "container-local changed"; chmod 755 /mnt/container-local
 
-# Boot: the package ships gantry-boot.service, enables it, and turns 0.3.1's
-# per-project gantry@<name> links into boot registrations.
+# Boot: the package ships gantry-boot.service and enables it.
 [ -f /lib/systemd/system/gantry-boot.service ] || [ -f /usr/lib/systemd/system/gantry-boot.service ] && ok "gantry-boot.service installed" || bad "no gantry-boot.service"
 [ -L /etc/systemd/system/multi-user.target.wants/gantry-boot.service ] && ok "gantry-boot.service enabled" || bad "gantry-boot.service not enabled"
-mkdir -p /etc/systemd/system/multi-user.target.wants
-ln -sf /lib/systemd/system/gantry@.service /etc/systemd/system/multi-user.target.wants/gantry@old1.service
-dpkg-reconfigure gantry >/dev/null 2>&1
-[ -f /var/lib/gantry/boot/old1 ] && [ ! -e /etc/systemd/system/multi-user.target.wants/gantry@old1.service ] && ok "gantry@old1 migrated to boot" || bad "gantry@ not migrated: $(ls /var/lib/gantry/boot /etc/systemd/system/multi-user.target.wants)"
-rm -f /var/lib/gantry/boot/old1
 
 # Direct sudo for anything else must fail.
 su -s /bin/sh gantry -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"

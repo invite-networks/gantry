@@ -122,11 +122,6 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
                 )));
             }
         }
-        if p.networks.is_some() {
-            return Err(Error::config(format!(
-                "pod {pod_name}: networks: was replaced by network:, a list of interfaces with parent and address"
-            )));
-        }
         let attachments = pod_networks(&pod_name, p.network.unwrap_or_default())?;
         let pod = Pod {
             hostname: p.hostname.unwrap_or_else(|| pod_name.clone()),
@@ -962,11 +957,6 @@ fn parse_peer(s: &str) -> std::result::Result<Peer, String> {
     if s == "subnet" {
         return Ok(Peer::Subnet);
     }
-    if s.starts_with("network:") {
-        return Err(format!(
-            "{s:?}: named networks are gone; use subnet for the pod's own subnet"
-        ));
-    }
     if let Ok(n) = s.parse::<IpNet>() {
         return Ok(Peer::Cidr(n.trunc()));
     }
@@ -1747,10 +1737,6 @@ mod tests {
                 "name: t\nnetworks:\n  lan: { driver: macvlan }\nservices: {}\n".into(),
                 "top-level networks",
             ),
-            (
-                "name: t\npods:\n  p: { networks: { lan: { ipv4_address: 192.0.2.5 } } }\nservices: {}\n".into(),
-                "replaced by network:",
-            ),
             ("name: t\npods:\n  p:\n    network: [{ address: 192.0.2.5/24 }]\nservices: {}\n".into(), "parent"),
             (n("driver: macvlan"), "address is required"),
             (n("address: 192.0.2.5"), "needs a prefix length"),
@@ -1784,10 +1770,6 @@ mod tests {
                 "set pod:",
             ),
             ("name: t\nservices:\n  a: { image: x }\n".into(), "no pod to run in"),
-            (
-                format!("name: t\n{POD}    firewall: {{ input: [{{ from: network:lan }}] }}\nservices: {{}}\n"),
-                "use subnet",
-            ),
             (
                 "name: t\nservices:\n  a: { image: x, network_mode: none, depends_on: [b] }\n  b: { image: y, network_mode: none, depends_on: [a] }\n".into(),
                 "cycle",

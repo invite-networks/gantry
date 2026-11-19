@@ -33,9 +33,8 @@ from the environment first, then from `.env` in the project directory (or
 
 `--runtime` on the command line forces every service onto one runtime.
 
-A top-level `networks:` section is an error. Gantry 0.2 and earlier used
-one. Move each network's parent and subnet into the pods that use it (see
-below).
+A top-level `networks:` section is an error. Each pod defines its own
+interfaces (see below).
 
 ## pods (extension)
 
