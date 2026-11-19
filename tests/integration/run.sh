@@ -4,14 +4,16 @@
 #
 #   sudo GT_PARENT=vlan4 GT_PREFIX=29 GT_GATEWAY=192.0.2.222 \
 #        GT_IP1=192.0.2.217 GT_IP2=192.0.2.218 GT_IP3=192.0.2.219 \
-#        tests/integration/run.sh [docker] [podman] [kiri] [dhcp] [dhcpmove] [ipv6]
+#        tests/integration/run.sh [docker] [kiri] [dhcp] [dhcpmove] [ipv6] [heal]
 #
-# With no arguments it runs docker, podman and dhcp. The dhcp scenario uses
+# With no arguments it runs docker, dhcp and heal. The dhcp scenario uses
 # an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq. To
 # lease from a real network's DHCP server instead, set GT_DHCP_PARENT to
 # the parent interface and GT_DHCP_GATEWAY to the gateway the lease hands
 # out (the lease release check is skipped, as the server log is not ours).
 # dhcpmove moves the lab's DHCP pool under a running pod (about a minute).
+# heal runs the health watcher on Docker and kiri (GT_HEAL_RUNTIMES) with
+# loopback-only pods, so it needs no addresses (about a minute each).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 pass=0
@@ -146,10 +148,37 @@ ipv6() {
   $K down >/dev/null 2>&1
 }
 
-targets=${*:-docker podman dhcp}
+heal() {
+  for rt in ${GT_HEAL_RUNTIMES:-docker kiri}; do
+    echo "== heal on $rt"
+    export GANTRY_RUNTIME=$rt
+    K="gantry -f $here/heal/gantry.yaml"
+    $K down >/dev/null 2>&1
+    if ! $K up -d >/tmp/gt-heal-up.log 2>&1; then
+      bad "up ($rt)"; tail -5 /tmp/gt-heal-up.log; continue
+    fi
+    sleep 8 # two failed checks at 2s each, then marked unhealthy
+    timeout -s TERM 25 gantry supervise >/tmp/gt-heal.log 2>&1 &
+    sup=$!
+    sleep 3
+    check "a second watcher is refused" sh -c "gantry supervise 2>&1 | grep -q 'another health watcher'"
+    wait "$sup"
+    check "restart: sick was restarted" grep -q "gtheal/sick: Restarted" /tmp/gt-heal.log
+    check "restart: sick is running" sh -c "$K ps | grep sick | grep -q running"
+    check "stop: doomed was stopped" grep -q "gtheal/doomed: Stopped" /tmp/gt-heal.log
+    check_not "stop: doomed stays down" sh -c "$K ps | grep doomed | grep -q running"
+    check_not "none: calm untouched" grep -q "gtheal/calm" /tmp/gt-heal.log
+    check "watcher stopped cleanly" grep -q "health watcher stopped" /tmp/gt-heal.log
+    $K down >/dev/null 2>&1
+  done
+  unset GANTRY_RUNTIME
+}
+
+targets=${*:-docker dhcp heal}
 for t in $targets; do
   case $t in
-    docker|podman|kiri) e2e "$t" ;;
+    docker|kiri) e2e "$t" ;;
+    heal) heal ;;
     dhcp) dhcp ;;
     dhcpmove) dhcpmove ;;
     ipv6) ipv6 ;;

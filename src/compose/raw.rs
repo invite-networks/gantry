@@ -290,6 +290,7 @@ pub struct Service {
     pub tmpfs: Option<StringOrList>,
     pub restart: Option<String>,
     pub healthcheck: Option<Healthcheck>,
+    pub health_on_failure: Option<String>,
     pub depends_on: Option<DependsOn>,
     pub stop_signal: Option<String>,
     pub stop_grace_period: Option<String>,

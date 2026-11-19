@@ -482,11 +482,8 @@ fn check_name(name: &str, what: &str) -> Result<()> {
 }
 
 fn parse_runtime(s: &str, what: &str) -> Result<RuntimeKind> {
-    RuntimeKind::parse(s).ok_or_else(|| {
-        Error::config(format!(
-            "{what}: unknown runtime {s:?} (docker, podman or kiri)"
-        ))
-    })
+    RuntimeKind::parse(s)
+        .ok_or_else(|| Error::config(format!("{what}: unknown runtime {s:?} (docker or kiri)")))
 }
 
 /// The pod a `network_mode: none` service runs in: loopback only.
@@ -1115,6 +1112,20 @@ fn service(
         }
     }
 
+    let health_on_failure = match s.health_on_failure.as_deref() {
+        None => HealthOnFailure::None,
+        Some(v) => HealthOnFailure::parse(v)
+            .ok_or_else(|| err(format!("health_on_failure {v:?} (none, restart, stop)")))?,
+    };
+    if health_on_failure != HealthOnFailure::None
+        && healthcheck.as_ref().is_some_and(|h| h.disabled)
+    {
+        return Err(err(format!(
+            "health_on_failure: {} needs a healthcheck, but it is disabled",
+            health_on_failure.as_str()
+        )));
+    }
+
     let mut ports = Vec::new();
     for p in s.ports.unwrap_or_default() {
         let (proto, range, published) = match p {
@@ -1232,6 +1243,7 @@ fn service(
         // Engines restart crashed services; systemd only runs `up` at boot.
         restart: s.restart.or_else(|| Some(DEFAULT_RESTART.into())),
         healthcheck,
+        health_on_failure,
         depends_on,
         stop_signal: s.stop_signal,
         stop_grace_period: s
@@ -1620,6 +1632,21 @@ mod tests {
         .unwrap();
         assert_eq!(q.services["a"].restart.as_deref(), Some("no"));
         assert_eq!(q.services["b"].restart.as_deref(), Some("on-failure:3"));
+        assert_eq!(q.services["a"].health_on_failure, HealthOnFailure::None);
+        let h = try_load(&format!(
+            "name: t\n{POD}services:\n  a: {{ image: x, health_on_failure: restart }}\n  b: {{ image: x, health_on_failure: stop, healthcheck: {{ test: [CMD, 'true'] }} }}\n"
+        ))
+        .unwrap();
+        assert_eq!(h.services["a"].health_on_failure, HealthOnFailure::Restart);
+        assert_eq!(h.services["b"].health_on_failure, HealthOnFailure::Stop);
+        let bad = try_load(&format!(
+            "name: t\n{POD}services:\n  a: {{ image: x, health_on_failure: kill }}\n"
+        ));
+        assert!(bad.unwrap_err().to_string().contains("none, restart, stop"));
+        let off = try_load(&format!(
+            "name: t\n{POD}services:\n  a: {{ image: x, health_on_failure: restart, healthcheck: {{ disable: true }} }}\n"
+        ));
+        assert!(off.unwrap_err().to_string().contains("disabled"));
         // Every pod gets a firewall with the defaults on and input open.
         let fw = p.pods["p"].firewall.as_ref().unwrap();
         assert!(fw.defaults);

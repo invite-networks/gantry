@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.3.x, with the Docker Engine API engine layer |
+| Version covered | 0.1.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
@@ -36,7 +36,6 @@ to start containers inside namespaces that already exist.
                         files, nftables)          over Unix sockets)
                                 |                      |
                          /run/netns, /run/gantry     +--> dockerd --> gantry-oci --> runc
-                                |                      +--> podman API service
                          LAN via macvlan/ipvlan        +--> kiri daemon
 ```
 
@@ -54,8 +53,9 @@ to start containers inside namespaces that already exist.
 | Shared files | `src/pod/files.rs` | Rendering and writing `hosts`, `resolv.conf`, `hostname`. |
 | Pod state | `src/pod/state.rs` | Paths under the run directory and the `PodState` record. |
 | Firewall | `src/firewall.rs` | Renders a pod's rules as an nftables ruleset text. |
-| Engine | `src/engine/` | `mod.rs`: one client per runtime over the Docker Engine API (bollard), socket selection and the Podman fallback, container, image, volume and log operations. `spec.rs`: the create body for a service in its pod. `exec.rs`: exec with TTY and resize. `auth.rs`: registry credentials. `build.rs`: image builds through the engine CLI. |
+| Engine | `src/engine/` | `mod.rs`: one client per runtime over the Docker Engine API (bollard), socket selection, container, image, volume and log operations. `spec.rs`: the create body for a service in its pod. `exec.rs`: exec with TTY and resize. `auth.rs`: registry credentials. `build.rs`: image builds through the engine CLI. |
 | OCI shim | `src/oci.rs`, `src/bin/gantry-oci.rs` | Parses the runtime invocation, rewrites the bundle's `config.json` from annotations, execs the real runtime. |
+| Health watcher | `src/heal.rs` | `watch`: acts on unhealthy containers that set `health_on_failure`; restart backoff, host lock, action reports (section 6.2). |
 | Orchestrator | `src/orchestrator.rs` | `up`, `down`, `start`, `stop`, dependency ordering, waiting on conditions, the per-project lock. |
 | Errors | `src/errors.rs` | One `thiserror` enum grouped by layer: Config, Io, Sys, Engine, Network, Firewall, Dhcp, State. |
 | Utilities | `src/util.rs` | Atomic and in-place writes, hashing. |
@@ -188,48 +188,63 @@ and the package depends on it.
 
 ## 6. Engine layer
 
-### 6.1 One API client for three runtimes
+### 6.1 One API client for both runtimes
 
-All three runtimes speak the Docker Engine HTTP API, so `Engine` wraps one
+Docker is the primary runtime and kiri the second. Both speak the Docker Engine HTTP API, so `Engine` wraps one
 `bollard::Docker` client per runtime, connected over a Unix socket
 [FR-RT-01]:
 
 | Runtime | Socket | Override |
 |---|---|---|
 | Docker | `/var/run/docker.sock` [FR-RT-02] | `GANTRY_DOCKER_HOST` |
-| Podman | `/run/podman/podman.sock` [FR-RT-04] | `GANTRY_PODMAN_HOST` |
 | kiri | `/run/kiri/docker.sock` [FR-RT-03] | `GANTRY_KIRI_HOST` |
 
 Clients are created lazily, only for runtimes the command needs. `Engine::check`
 pings the socket and reports the path that failed [FR-RT-12]. Calls use the
 bollard request timeout [NFR-REL-04], except log follow and attached exec.
 
-This replaces the earlier design, which ran the `docker` and `podman` CLIs
+This replaces the earlier design, which ran the engine CLIs
 as subprocesses (DECISIONS item 21). The API removes the CLI dependency,
 avoids parsing CLI output, returns typed errors, and reuses one connection
 per engine [NFR-PERF-05]. The one remaining subprocess is the image build
 (section 6.8).
 
-### 6.2 Podman API service
+### 6.2 Self-healing watcher
 
-Podman serves the Docker-compatible API from `podman system service`. The
-normal setup is systemd socket activation: `gantry setup podman` enables
-`podman.socket`, which listens on `/run/podman/podman.sock` and starts the
-service on demand [FR-RT-09].
+`src/heal.rs` holds the health watcher [FR-HEAL-03 to FR-HEAL-09]. Docker
+and kiri run healthchecks and set `State.Health.Status`, but neither acts
+on `unhealthy`; restart policies cover exits only. The watcher fills that
+gap for services that opt in.
 
-If the socket does not answer a ping, Gantry falls back in this order
-[FR-RT-04]:
-
-1. `systemctl start podman.socket`, then ping again.
-2. If systemd or the unit is unavailable, start a private service:
-   `podman system service --time=300 unix://<run dir>/podman.sock` (run
-   directory default `/run/gantry`). The socket is mode 0600. Gantry waits
-   for it to answer a ping. The service exits by itself after 5 idle
-   minutes, so commands run close together reuse it [NFR-SEC-06].
-
-The `podman` binary is needed only for this fallback and for builds.
-Containers keep running after the service exits, because Podman containers
-are supervised by `conmon`, not by the service.
+* **Opt in.** `health_on_failure` is stored as the container label
+  `io.gantry.health-on-failure` [FR-HEAL-02]. The watcher needs only the
+  engines: it lists running containers with that label
+  (`GET /containers/json?filters={"label":["io.gantry.health-on-failure"],"status":["running"]}`)
+  and inspects each. Projects appear and disappear without a reload.
+* **Poll, not events.** Every 10 seconds per engine. Healthchecks run every
+  30 seconds or so, the list is small, and polling behaves the same on
+  Docker and kiri.
+* **Guard.** For an unhealthy container it takes the project's command lock
+  (`/run/gantry/locks/<project>.lock`) without waiting and inspects again under it [FR-HEAL-04].
+  `gantry up`, `down`, `data move` and `gantry boot start` hold that lock,
+  so boot priority waits and deploys are never interrupted. A stopped
+  container is never listed, so `gantry stop` and `down` are not undone.
+* **Restart.** `POST /containers/{id}/restart`, which keeps the container
+  ID and its stop timeout. History is kept per container ID: the first
+  restart is immediate, later ones wait 30 s doubling to 5 min, and after 5
+  restarts within 30 minutes the watcher reports `gave_up` and leaves the
+  container until it is healthy again or recreated [FR-HEAL-05].
+* **Stop.** `POST /containers/{id}/stop`. Docker treats that as a manual
+  stop, so `unless-stopped` does not bring it back [FR-HEAL-06].
+* **One per host.** `watch` holds `flock` on `/run/gantry/heal.lock`
+  [FR-HEAL-07].
+* **Library first.** `heal::watch(runtimes, policy, control, actions,
+  cancel)` takes a `tokio_util` `CancellationToken`, a `Control` for
+  per-project pause and resume, and an optional `mpsc::Sender<HealAction>`
+  fed with `try_send` [FR-HEAL-08]. Cancellation is checked between
+  actions, so the future resolves after any restart in progress.
+  `gantry supervise` and `gantry-supervise.service` run it for Docker and
+  kiri [FR-HEAL-10]; gantry-agent runs it in-process and disables the unit.
 
 ### 6.3 Operations used
 
@@ -242,7 +257,8 @@ are supervised by `conmon`, not by the service.
 | List, inspect | `GET /containers/json?all=true&filters={"label":["io.gantry.project=<p>"]}`, `GET /containers/{id}/json` |
 | Logs | `GET /containers/{id}/logs` with `follow`, `tail`, stdout and stderr |
 | Exec | `POST /containers/{id}/exec`, `POST /exec/{id}/start` (attached, with TTY when requested), `POST /exec/{id}/resize` on terminal resize, `GET /exec/{id}/json` for the exit code |
-| Health waits | `GET /containers/{id}/json` (`State.Health.Status`). For Podman, also `GET /v4.0.0/libpod/containers/{name}/healthcheck` once per poll, since Podman runs healthchecks from systemd timers that are not always available. |
+| Health waits | `GET /containers/{id}/json` (`State.Health.Status`). |
+| Self-healing | `GET /containers/json` filtered on the heal label and `running`, `POST /containers/{id}/restart`, `POST /containers/{id}/stop` (section 6.2). |
 | Volumes | `POST /volumes/create`, `GET /volumes/{name}`, `DELETE /volumes/{name}` |
 
 All of these go through the API; no CLI is involved [FR-RT-14].
@@ -253,8 +269,6 @@ Registry credentials for pulls come from the same places the CLIs read
 
 * Docker and kiri: `$DOCKER_CONFIG/config.json`, default
   `~/.docker/config.json` of root.
-* Podman: `REGISTRY_AUTH_FILE`, `/run/containers/<uid>/auth.json`,
-  `~/.config/containers/auth.json`, then the Docker file.
 Credentials are passed per request and never written to disk by Gantry.
 
 ### 6.4 Concurrency
@@ -273,8 +287,7 @@ project lock and the address book.
 
 ### 6.5 Translating a service
 
-`create_args` becomes a builder that fills a create request: name, image
-(qualified to `docker.io` for Podman [FR-RT-10]), command, entrypoint,
+`create_args` becomes a builder that fills a create request: name, image, command, entrypoint,
 environment, user, working directory, labels, mounts, tmpfs, devices,
 capabilities, security options, resources, ulimits, healthcheck, restart
 policy, stop signal and init.
@@ -302,8 +315,7 @@ mounts on all runtimes [FR-DNS-01].
 | Runtime | HostConfig |
 |---|---|
 | Docker | `Runtime: "gantry"`, `NetworkMode: "none"`, `Annotations: {io.gantry.netns, io.gantry.utsns, io.gantry.ipcns}`. Hostname only when UTS is not shared. [FR-RT-05] |
-| Podman | `NetworkMode: "ns:<netns>"`, `UTSMode: "ns:<uts>"`, `IpcMode: "ns:<ipc>"`. Hostname when UTS is not shared. [FR-RT-06] |
-| kiri | Same as Podman: `NetworkMode`, `UTSMode` and `IpcMode` set to `ns:<path>`. Needs both patches in `contrib/kiri`. [FR-RT-06] |
+| kiri | `NetworkMode: "ns:<netns>"`, `UTSMode: "ns:<uts>"`, `IpcMode: "ns:<ipc>"`, hostname when UTS is not shared. Needs both patches in `contrib/kiri`. [FR-RT-06] |
 
 ### 6.7 The Docker shim
 
@@ -339,13 +351,11 @@ slow compared with process startup, and the CLIs give BuildKit,
 | Runtime | Build command |
 |---|---|
 | Docker | `docker build` against the Docker socket (`DOCKER_HOST` set from `GANTRY_DOCKER_HOST`) |
-| Podman | `podman build` |
 | kiri | `docker build` against the kiri socket with `DOCKER_BUILDKIT=0`, since kiri implements the classic build endpoint only |
 
 Compose build keys (context, dockerfile, args, target, labels, secrets and
 the rest) map to the CLI flags. The image is tagged with the service's
-image name. On Podman, a built image without a registry is tagged under
-`localhost/`. Extra `build.tags` are added. `gantry build [svc...]` builds on demand
+image name. Extra `build.tags` are added. `gantry build [svc...]` builds on demand
 and `up --build` builds before starting [FR-CLI-11]; plain `up` builds only
 images that are missing. The CLI is needed only on hosts with projects that
 use `build:`.
@@ -410,9 +420,9 @@ reboot, by design.
 /run/netns/
   gt-<project>-<pod>              pinned network namespace (ip netns visible)
 /run/gantry/
-  podman.sock                     private Podman API socket (fallback only; service exits when idle)
+  heal.lock                       flock held by the one health watcher on the host
+  locks/<project>.lock            flock for commands that change the project
   <project>/
-    lock                          flock for commands that change the project
     project.json                  normalized project snapshot (refresh source)
     pods/<pod>/
       state.json                  PodState: id, config hash, namespace paths, interfaces
@@ -457,8 +467,6 @@ reboot, by design.
 * DHCP agent PIDs are verified before signaling [NFR-SEC-04].
 * Namespace pins and state files are created race-free and written
   atomically [NFR-SEC-05].
-* The private Podman service listens on a 0600 Unix socket in the run
-  directory and has no TCP listener [NFR-SEC-06].
 * No `unwrap`, `expect` or `panic` outside tests [NFR-SEC-07]. Ids come from
   `getrandom` [NFR-SEC-08].
 * Gantry opens no network listener. The reverse proxy and TLS offload
@@ -485,15 +493,17 @@ reboot, by design.
 | DHCP server silent | The agent keeps retrying; services start without an address until a lease binds. |
 | Netns missing when Docker starts a container | The shim fails with a hint to rerun `gantry up`. |
 | Crash or reboot leaves stale state | Next `up` replaces stale namespaces and containers whose pod id no longer matches. |
-| Podman socket absent | `podman.socket` started, else a private API service (section 6.2). |
-| Build tool missing | Error naming the missing `docker` or `podman` CLI, only for services with `build:`. |
+| Build tool missing | Error naming the missing `docker` CLI, only for services with `build:`. |
+| Service stays unhealthy | With `health_on_failure`, restarted with backoff or stopped (section 6.2); without it, left as the engine marks it. |
+| Engine unreachable while watching | The watcher logs it once, skips that engine and tries again each poll. |
 
 ## 11. Deployment
 
 * Binaries in `/usr/bin` (package) or `/usr/local/bin` (source build):
   `gantry`, `gantry-oci`.
 * Docker hosts: shim registered in `/etc/docker/daemon.json`.
-* Podman hosts: `podman.socket` enabled.
+* Every host: `gantry-supervise.service` enabled, unless gantry-agent runs
+  the watcher.
 * kiri hosts: patched kiri serving `/run/kiri/docker.sock`.
 * Projects for boot: `<parent>/<name>/gantry.yaml`, where the parents are
   listed in `/etc/gantry/project-dirs` (`/etc/gantry`, `/mnt/*`),

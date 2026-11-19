@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "gantry"
-version = "0.3.4"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "bollard",
@@ -400,6 +400,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

@@ -1,8 +1,7 @@
-//! Container engines. Docker, Podman and kiri all speak the Docker Engine
-//! API, so one client (`bollard`) drives all three over their Unix
-//! sockets: Docker at `/var/run/docker.sock`, kiri at
-//! `/run/kiri/docker.sock`, and Podman through its Docker-compatible API
-//! at `/run/podman/podman.sock`. No engine CLI is needed except for image
+//! Container engines. Docker is the primary engine; kiri is also
+//! supported. Both speak the Docker Engine API, so one client (`bollard`)
+//! drives them over their Unix sockets: Docker at `/var/run/docker.sock`
+//! and kiri at `/run/kiri/docker.sock`. No engine CLI is needed except for image
 //! builds. The differences are in how a container joins its pod's
 //! namespaces; see [`spec`].
 
@@ -11,18 +10,17 @@ pub mod build;
 pub mod exec;
 pub mod spec;
 
-pub use spec::{create_spec, hash_of, qualify_image};
+pub use spec::{create_spec, hash_of};
 
 use crate::errors::{Error, Result};
-use crate::pod::state;
-use crate::project::RuntimeKind;
+use crate::project::{HealthOnFailure, RuntimeKind};
 use bollard::Docker;
 pub use bollard::container::LogOutput;
 use bollard::models::{ContainerCreateBody, ContainerInspectResponse, VolumeCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, InspectContainerOptions, KillContainerOptions,
     ListContainersOptions, LogsOptions, RemoveContainerOptions, RemoveVolumeOptions,
-    StartContainerOptions, StopContainerOptions, TopOptions,
+    RestartContainerOptions, StartContainerOptions, StopContainerOptions, TopOptions,
 };
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use std::collections::HashMap;
@@ -30,7 +28,6 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::OnceCell;
 
 pub const LABEL_PROJECT: &str = "io.gantry.project";
@@ -38,21 +35,14 @@ pub const LABEL_SERVICE: &str = "io.gantry.service";
 pub const LABEL_POD: &str = "io.gantry.pod";
 pub const LABEL_POD_ID: &str = "io.gantry.pod-id";
 pub const LABEL_HASH: &str = "io.gantry.config-hash";
+/// The service's `health_on_failure:`, set only when it is not `none`.
+pub const LABEL_HEAL: &str = "io.gantry.health-on-failure";
 
 /// Name the Docker runtime shim is registered under.
 pub const DOCKER_RUNTIME: &str = "gantry";
 
 /// Per request timeout. Long because `stop` waits for the grace period.
 const REQUEST_TIMEOUT_SECS: u64 = 900;
-
-/// The Docker API version Podman's compat layer implements.
-const PODMAN_COMPAT_API: bollard::ClientVersion = bollard::ClientVersion {
-    major_version: 1,
-    minor_version: 41,
-};
-
-/// How long a private Podman API service stays up when idle.
-const PODMAN_SERVICE_IDLE_SECS: u32 = 300;
 
 pub type LogStream = Pin<Box<dyn Stream<Item = Result<LogOutput>> + Send>>;
 
@@ -67,9 +57,6 @@ pub struct Engine {
     pub kind: RuntimeKind,
     host: String,
     client: Arc<OnceCell<Client>>,
-    /// Start Podman's API service when its socket is down. Off for engines
-    /// a project does not use, so looking never starts anything.
-    autostart: bool,
 }
 
 /// A container as reported by `inspect`.
@@ -86,6 +73,10 @@ pub struct ContainerInfo {
     pub hash: String,
     pub status: String,
     pub health: Option<String>,
+    /// Consecutive failed healthchecks, when the container has one.
+    pub failing_streak: Option<i64>,
+    /// The `io.gantry.health-on-failure` label.
+    pub heal: HealthOnFailure,
     pub exit_code: Option<i64>,
     pub image: String,
     /// A `gantry run` container rather than the service's own.
@@ -108,11 +99,10 @@ pub struct MountInfo {
 }
 
 /// The default API socket of each runtime, overridable with
-/// `GANTRY_DOCKER_HOST`, `GANTRY_PODMAN_HOST` and `GANTRY_KIRI_HOST`.
+/// `GANTRY_DOCKER_HOST` and `GANTRY_KIRI_HOST`.
 pub fn default_host(kind: RuntimeKind) -> String {
     let (var, default) = match kind {
         RuntimeKind::Docker => ("GANTRY_DOCKER_HOST", "unix:///var/run/docker.sock"),
-        RuntimeKind::Podman => ("GANTRY_PODMAN_HOST", "unix:///run/podman/podman.sock"),
         RuntimeKind::Kiri => ("GANTRY_KIRI_HOST", "unix:///run/kiri/docker.sock"),
     };
     std::env::var(var)
@@ -140,15 +130,6 @@ impl Engine {
             kind,
             host: default_host(kind),
             client: Arc::new(OnceCell::new()),
-            autostart: true,
-        }
-    }
-
-    /// An engine that only connects to a socket that is already up.
-    pub fn passive(kind: RuntimeKind) -> Self {
-        Self {
-            autostart: false,
-            ..Self::new(kind)
         }
     }
 
@@ -176,48 +157,27 @@ impl Engine {
     }
 
     async fn connect_inner(&self) -> Result<Client> {
-        let mut socket = socket_path(&self.host);
+        let socket = socket_path(&self.host);
         if !socket_alive(&socket).await {
-            socket = match self.kind {
-                RuntimeKind::Podman if self.autostart => start_podman_service(&socket).await?,
-                RuntimeKind::Podman => {
-                    return Err(Error::engine(format!(
-                        "podman: no API service at {}",
-                        socket.display()
-                    )));
-                }
-                RuntimeKind::Docker => {
-                    return Err(Error::engine(format!(
-                        "docker: cannot reach {}; is dockerd running?",
-                        socket.display()
-                    )));
-                }
-                RuntimeKind::Kiri => {
-                    return Err(Error::engine(format!(
-                        "kiri: cannot reach {}; is kiri.service running?",
-                        socket.display()
-                    )));
-                }
+            return match self.kind {
+                RuntimeKind::Docker => Err(Error::engine(format!(
+                    "docker: cannot reach {}; is dockerd running?",
+                    socket.display()
+                ))),
+                RuntimeKind::Kiri => Err(Error::engine(format!(
+                    "kiri: cannot reach {}; is kiri.service running?",
+                    socket.display()
+                ))),
             };
         }
         let path = socket.display().to_string();
         let fail = |e: bollard::errors::Error| Error::engine(format!("{} {path}: {e}", self.kind));
-        let docker = match self.kind {
-            // Podman's /version gathers host information and takes about
-            // 160 ms; its compat API has implemented version 1.41 for years,
-            // so use that directly.
-            RuntimeKind::Podman => {
-                Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, &PODMAN_COMPAT_API)
-                    .map_err(fail)?
-            }
-            _ => {
-                Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, bollard::API_DEFAULT_VERSION)
-                    .map_err(fail)?
-                    .negotiate_version()
-                    .await
-                    .map_err(fail)?
-            }
-        };
+        let docker =
+            Docker::connect_with_unix(&path, REQUEST_TIMEOUT_SECS, bollard::API_DEFAULT_VERSION)
+                .map_err(fail)?
+                .negotiate_version()
+                .await
+                .map_err(fail)?;
         Ok(Client { docker, socket })
     }
 
@@ -257,8 +217,7 @@ impl Engine {
 
     /// The local image's ID, or None when it is not present.
     pub async fn image_id(&self, image: &str) -> Result<Option<String>> {
-        let image = qualify_image(self.kind, image);
-        match self.docker().await?.inspect_image(&image).await {
+        match self.docker().await?.inspect_image(image).await {
             Ok(i) => Ok(Some(i.id.unwrap_or_default())),
             Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(self.err(&format!("image {image}"), e)),
@@ -268,8 +227,7 @@ impl Engine {
     /// Pulls an image, with registry credentials from the usual auth
     /// files when there are any.
     pub async fn pull(&self, image: &str, platform: Option<&str>) -> Result<()> {
-        let image = qualify_image(self.kind, image);
-        let (name, tag) = auth::split_reference(&image);
+        let (name, tag) = auth::split_reference(image);
         let creds = auth::credentials_for(self.kind, &name).await;
         let d = self.docker().await?;
         let opts = CreateImageOptions {
@@ -299,7 +257,7 @@ impl Engine {
         }
         // Some engines report a failed pull only in fields this client does
         // not model, so confirm the image is really there.
-        if self.image_id(&image).await?.is_none() {
+        if self.image_id(image).await?.is_none() {
             return Err(Error::engine(format!(
                 "{} pull {image}: the engine reported no error but the image is not present{}",
                 self.kind,
@@ -360,6 +318,43 @@ impl Engine {
             Err(e) if is_status(&e, 304) || not_found(&e) => Ok(()),
             Err(e) => Err(self.err(&format!("stop {name}"), e)),
         }
+    }
+
+    /// Restarts a container, waiting up to its own stop timeout before
+    /// killing it.
+    pub async fn restart(&self, name: &str) -> Result<()> {
+        self.docker()
+            .await?
+            .restart_container(name, None::<RestartContainerOptions>)
+            .await
+            .map_err(|e| self.err(&format!("restart {name}"), e))
+    }
+
+    /// Running Gantry containers that carry a `health_on_failure` action,
+    /// inspected. Containers that vanish while listing are skipped.
+    pub async fn list_healing(&self) -> Result<Vec<ContainerInfo>> {
+        let d = self.docker().await?;
+        let mut filters = HashMap::new();
+        filters.insert("label".to_string(), vec![LABEL_HEAL.to_string()]);
+        filters.insert("status".to_string(), vec!["running".to_string()]);
+        let opts = ListContainersOptions {
+            all: false,
+            filters: Some(filters),
+            ..Default::default()
+        };
+        let list = d
+            .list_containers(Some(opts))
+            .await
+            .map_err(|e| self.err("ps", e))?;
+        let ids: Vec<String> = list.into_iter().filter_map(|c| c.id).collect();
+        let found = futures_util::future::join_all(ids.iter().map(|id| self.inspect(id))).await;
+        let mut out = Vec::new();
+        for r in found {
+            if let Some(c) = r? {
+                out.push(c);
+            }
+        }
+        Ok(out)
     }
 
     /// Force-removes a container and its anonymous volumes. Named volumes
@@ -486,18 +481,6 @@ impl Engine {
         Ok(Box::pin(s))
     }
 
-    /// Runs the container's healthcheck once. Podman runs healthchecks
-    /// from systemd timers, which are not always available; this lets a
-    /// `service_healthy` wait make progress anyway. A no-op elsewhere.
-    pub async fn run_healthcheck(&self, name: &str) -> Result<()> {
-        if self.kind != RuntimeKind::Podman {
-            return Ok(());
-        }
-        let socket = self.client().await?.socket.clone();
-        let path = format!("/v4.0.0/libpod/containers/{name}/healthcheck");
-        raw_get(&socket, &path).await.map(drop)
-    }
-
     pub async fn kill(&self, name: &str, signal: &str) -> Result<()> {
         let opts = KillContainerOptions {
             signal: signal.to_string(),
@@ -539,7 +522,7 @@ impl Engine {
         self.docker().await
     }
 
-    /// The socket this engine talks to (after any Podman fallback).
+    /// The socket this engine talks to.
     pub async fn socket(&self) -> Result<PathBuf> {
         Ok(self.client().await?.socket.clone())
     }
@@ -572,6 +555,10 @@ fn container_info(c: &ContainerInspectResponse) -> ContainerInfo {
             .map(|s| s.to_string())
             .unwrap_or_default(),
         health,
+        failing_streak: state
+            .and_then(|s| s.health.as_ref())
+            .and_then(|h| h.failing_streak),
+        heal: HealthOnFailure::parse(&label(LABEL_HEAL)).unwrap_or_default(),
         exit_code: state.and_then(|s| s.exit_code),
         image: c
             .config
@@ -600,123 +587,4 @@ async fn socket_alive(path: &std::path::Path) -> bool {
     )
     .await
     .is_ok_and(|r| r.is_ok())
-}
-
-/// Makes a Podman API socket available: the systemd socket unit first,
-/// then a private `podman system service` that exits when idle.
-async fn start_podman_service(default: &std::path::Path) -> Result<PathBuf> {
-    let started = tokio::process::Command::new("systemctl")
-        .args(["start", "podman.socket"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|s| s.success());
-    if started && wait_socket(default, Duration::from_secs(3)).await {
-        tracing::info!("started podman.socket");
-        return Ok(default.to_path_buf());
-    }
-    let private = state::run_dir().join("podman.sock");
-    if socket_alive(&private).await {
-        return Ok(private);
-    }
-    state::ensure_dir(&state::run_dir())?;
-    // Serialize starters so two commands do not delete each other's socket.
-    let lock_path = state::run_dir().join("podman.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|e| Error::engine(format!("{}: {e}", lock_path.display())))?;
-    let _lock = tokio::task::spawn_blocking(move || {
-        nix::fcntl::Flock::lock(lock_file, nix::fcntl::FlockArg::LockExclusive)
-    })
-    .await
-    .map_err(|e| Error::engine(format!("podman lock: {e}")))?
-    .map_err(|(_, e)| Error::engine(format!("podman lock: {e}")))?;
-    if socket_alive(&private).await {
-        return Ok(private);
-    }
-    let _ = std::fs::remove_file(&private);
-    tracing::info!(
-        "starting a private podman API service at {}",
-        private.display()
-    );
-    let mut cmd = std::process::Command::new("podman");
-    cmd.args([
-        "system",
-        "service",
-        &format!("--time={PODMAN_SERVICE_IDLE_SECS}"),
-        &format!("unix://{}", private.display()),
-    ])
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .process_group(0);
-    cmd.spawn().map_err(|e| {
-        Error::engine(format!(
-            "podman: no API socket at {} and could not start `podman system service`: {e}",
-            default.display()
-        ))
-    })?;
-    if wait_socket(&private, Duration::from_secs(10)).await {
-        Ok(private)
-    } else {
-        Err(Error::engine(format!(
-            "podman: the API service did not come up at {}",
-            private.display()
-        )))
-    }
-}
-
-use std::os::unix::process::CommandExt;
-
-async fn wait_socket(path: &std::path::Path, within: Duration) -> bool {
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        if socket_alive(path).await {
-            return true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// A plain HTTP GET over a Unix socket, for the few libpod endpoints the
-/// Docker API has no equivalent for.
-async fn raw_get(socket: &std::path::Path, path: &str) -> Result<String> {
-    let mut s = tokio::net::UnixStream::connect(socket)
-        .await
-        .map_err(|e| Error::engine(format!("{}: {e}", socket.display())))?;
-    let req = format!("GET {path} HTTP/1.1\r\nHost: d\r\nConnection: close\r\n\r\n");
-    s.write_all(req.as_bytes())
-        .await
-        .map_err(|e| Error::engine(format!("{}: {e}", socket.display())))?;
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_secs(120), s.read_to_end(&mut buf))
-        .await
-        .map_err(|_| Error::engine(format!("{path}: timed out")))?
-        .map_err(|e| Error::engine(format!("{path}: {e}")))?;
-    let text = String::from_utf8_lossy(&buf).to_string();
-    let status = text
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or(0);
-    let body = text
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
-    if (200..300).contains(&status) {
-        Ok(body)
-    } else {
-        Err(Error::engine(format!(
-            "{path}: HTTP {status}: {}",
-            body.trim()
-        )))
-    }
 }

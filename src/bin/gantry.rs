@@ -54,7 +54,7 @@ struct Global {
     /// Activate a profile
     #[arg(long = "profile", global = true)]
     profiles: Vec<String>,
-    /// Run every service with this runtime (docker, podman or kiri)
+    /// Run every service with this runtime (docker or kiri)
     #[arg(long, global = true, value_parser = parse_runtime)]
     runtime: Option<RuntimeKind>,
     /// Log level (error, warn, info, debug, trace)
@@ -63,7 +63,7 @@ struct Global {
 }
 
 fn parse_runtime(s: &str) -> std::result::Result<RuntimeKind, String> {
-    RuntimeKind::parse(s).ok_or_else(|| format!("unknown runtime {s:?} (docker, podman, kiri)"))
+    RuntimeKind::parse(s).ok_or_else(|| format!("unknown runtime {s:?} (docker, kiri)"))
 }
 
 #[derive(Subcommand)]
@@ -200,6 +200,9 @@ enum Cmd {
     /// One time host setup for a runtime
     #[command(subcommand)]
     Setup(SetupCmd),
+    /// Watch every engine and act on unhealthy containers that set
+    /// `health_on_failure` (runs until stopped; see gantry-supervise.service)
+    Supervise,
     /// Print a shell completion script (bash, zsh, fish, elvish, powershell)
     Completion { shell: clap_complete::Shell },
     #[command(subcommand, hide = true)]
@@ -307,8 +310,6 @@ enum FwCmd {
 
 #[derive(Subcommand)]
 enum SetupCmd {
-    /// Enable Podman's API socket (podman.socket)
-    Podman,
     /// Register the gantry-oci runtime shim with Docker
     Docker {
         /// Path to gantry-oci (default: next to this binary)
@@ -507,21 +508,6 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Setup(SetupCmd::Podman) => {
-            require_root()?;
-            let ok = std::process::Command::new("systemctl")
-                .args(["enable", "--now", "podman.socket"])
-                .status()
-                .is_ok_and(|s| s.success());
-            if !ok {
-                return Err(Error::engine(
-                    "could not enable podman.socket; is podman installed with its systemd units?",
-                ));
-            }
-            Engine::new(RuntimeKind::Podman).check().await?;
-            println!("Podman API socket enabled; Podman is ready for gantry pods");
-            Ok(ExitCode::SUCCESS)
-        }
         Cmd::Setup(SetupCmd::Docker {
             oci_path,
             daemon_json,
@@ -705,13 +691,42 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Version => {
             println!("gantry {}", env!("CARGO_PKG_VERSION"));
-            for kind in [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri] {
-                let e = Engine::passive(kind);
+            println!("features: {}", gantry::FEATURES.join(", "));
+            for kind in [RuntimeKind::Docker, RuntimeKind::Kiri] {
+                let e = Engine::new(kind);
                 match e.version().await {
                     Ok(v) => println!("{kind}: {v}"),
                     Err(_) => println!("{kind}: not available"),
                 }
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Supervise => {
+            require_root()?;
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let stop = cancel.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{SignalKind, signal};
+                let (Ok(mut term), Ok(mut int)) = (
+                    signal(SignalKind::terminate()),
+                    signal(SignalKind::interrupt()),
+                ) else {
+                    return;
+                };
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                }
+                stop.cancel();
+            });
+            gantry::heal::watch(
+                &[RuntimeKind::Docker, RuntimeKind::Kiri],
+                gantry::heal::Policy::default(),
+                gantry::heal::Control::default(),
+                None,
+                cancel,
+            )
+            .await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Start { services } => {

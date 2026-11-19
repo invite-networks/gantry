@@ -13,7 +13,6 @@ use std::time::Duration;
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeKind {
     Docker,
-    Podman,
     Kiri,
 }
 
@@ -21,7 +20,6 @@ impl RuntimeKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "docker" => Some(Self::Docker),
-            "podman" => Some(Self::Podman),
             "kiri" => Some(Self::Kiri),
             _ => None,
         }
@@ -29,7 +27,6 @@ impl RuntimeKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Docker => "docker",
-            Self::Podman => "podman",
             Self::Kiri => "kiri",
         }
     }
@@ -270,6 +267,8 @@ pub struct Service {
     pub mounts: Vec<Mount>,
     pub restart: Option<String>,
     pub healthcheck: Option<Healthcheck>,
+    /// What `gantry supervise` does when the container turns unhealthy.
+    pub health_on_failure: HealthOnFailure,
     pub depends_on: IndexMap<String, DependsCondition>,
     pub stop_signal: Option<String>,
     pub stop_grace_period: Option<Duration>,
@@ -334,6 +333,39 @@ pub enum DependsCondition {
     ServiceStarted,
     ServiceHealthy,
     ServiceCompletedSuccessfully,
+}
+
+/// The action taken on a container its engine reports as unhealthy
+/// (`health_on_failure:`). Engines only mark such a container; Gantry's
+/// watcher acts on it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthOnFailure {
+    /// Leave it running and unhealthy (the engine's own behavior).
+    #[default]
+    None,
+    /// Restart it, with backoff and a cap.
+    Restart,
+    /// Stop it and leave it stopped.
+    Stop,
+}
+
+impl HealthOnFailure {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "none" => Some(Self::None),
+            "restart" => Some(Self::Restart),
+            "stop" => Some(Self::Stop),
+            _ => None,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

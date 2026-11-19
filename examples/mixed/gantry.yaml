@@ -1,6 +1,6 @@
-# One pod, three engines sharing its namespaces. nginx runs under Docker,
-# the checker under Podman and the reporter under kiri (patched, see
-# contrib/kiri). They share one hostname and talk over loopback because
+# One pod, two engines sharing its namespaces. nginx and the checker run
+# under Docker and the reporter under kiri (patched, see contrib/kiri).
+# nginx is restarted if its healthcheck keeps failing. They share one hostname and talk over loopback because
 # they live in one pod. The others start once nginx answers. The firewall
 # rule lets the lab and the pod's own subnet reach port 80; the default
 # policy rejects every other port from the subnet.
@@ -26,10 +26,11 @@ services:
       interval: 10s
       start_period: 5s
       start_interval: 500ms
+    health_on_failure: restart
   checker:
     image: alpine:3
     pod: app
-    runtime: podman
+    runtime: docker
     depends_on: { web: { condition: service_healthy } }
     command: ["sh", "-c", "while true; do wget -qO- http://localhost/ | grep -o 'Welcome to nginx' ; sleep 15; done"]
   reporter:

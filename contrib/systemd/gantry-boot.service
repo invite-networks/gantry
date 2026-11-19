@@ -7,7 +7,7 @@
 Description=Gantry projects
 # remote-fs.target: projects may live on NFS, next to their data.
 Wants=network-online.target remote-fs.target
-After=network-online.target remote-fs.target docker.service podman.socket kiri.service
+After=network-online.target remote-fs.target docker.service kiri.service
 
 [Service]
 Type=oneshot

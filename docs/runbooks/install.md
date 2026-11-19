@@ -3,8 +3,8 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.3.x with the Docker Engine API engine layer |
-| Validation | On the Debian 13 reference host (2026-11-16): the .deb installed with `apt`, and a pod with Docker, Podman and kiri services ran through the API engine layer. The .deb was built locally, not fetched from the apt repository. Steps 3 to 5 were done on that host before the .deb existed. |
+| Applies to | Gantry 0.1.x with the Docker Engine API engine layer |
+| Validation | On the Debian 13 reference host (2026-11-16): the .deb installed with `apt`, and a pod with Docker and kiri services ran through the API engine layer. The .deb was built locally, not fetched from the apt repository. Steps 3 to 5 were done on that host before the .deb existed. |
 
 ## 1. Prerequisites
 
@@ -14,15 +14,13 @@
 * `iproute2`, for operating and troubleshooting (`ip netns`, `ip -n`).
 * A parent interface for the pods, such as a VLAN interface, with a
   subnet and gateway on the LAN, and free addresses or a DHCP server.
-* At least one engine: Docker Engine, Podman 5, or kiri 0.2 with the
-  `contrib/kiri` patch.
+* At least one engine: Docker Engine (the primary engine), or kiri 0.2
+  with the `contrib/kiri` patch.
 * To build Gantry from source (section 2b): a Rust toolchain matching
   `rust-toolchain.toml`.
-* For projects that use `build:`: the `docker` CLI (Docker and kiri) or the
-  `podman` CLI.
+* For projects that use `build:`: the `docker` CLI (Docker and kiri).
 
-Apart from image builds, the `docker` and `podman` command line tools are
-not needed. Gantry talks to each engine's API socket.
+Apart from image builds, the `docker` command line tool is not needed. Gantry talks to each engine's API socket.
 
 ## 2. Install Gantry
 
@@ -104,31 +102,29 @@ Failure handling: if dockerd does not reload, run
 error in `daemon.json` stops dockerd from starting; fix the file and
 restart.
 
-## 4. Set up Podman
+## 4. Self-healing watcher
 
-Trigger: the host runs Podman services.
+Trigger: always; the package sets it up.
 
-```sh
-sudo gantry setup podman
-```
-
-This enables `podman.socket` (systemd socket activation), which serves
-Podman's Docker-compatible API at `/run/podman/podman.sock`. It is the same
-as `sudo systemctl enable --now podman.socket`.
+The package installs and enables `gantry-supervise.service`, which runs
+`gantry supervise`. It restarts or stops containers that turn `unhealthy`
+when their service sets `health_on_failure` (see the
+[file format](../compose-spec.md#health_on_failure)). Services without the
+key are never touched.
 
 Validate:
 
 ```sh
-sudo curl -s --unix-socket /run/podman/podman.sock http://d/_ping
+systemctl is-active gantry-supervise.service    # active
+journalctl -u gantry-supervise -n 5             # "health watcher started (docker, kiri)"
 ```
 
-Expected: `OK`.
-
-If the socket does not answer, Gantry runs `systemctl start podman.socket`.
-If that is unavailable, it starts a private
-`podman system service --time=300` on `/run/gantry/podman.sock` (mode
-0600), which exits after 5 idle minutes. The fallback needs the `podman`
-binary and adds startup time, so the socket is the recommended setup.
+An engine that is not installed is skipped and checked again on each poll.
+Only one watcher runs per host: it holds `/run/gantry/heal.lock`, and a
+second `gantry supervise` exits with "another health watcher is running".
+When gantry-agent manages the host it runs the watcher itself; take over
+with `sudo systemctl disable --now gantry-supervise.service`. Upgrades keep
+it disabled.
 
 ## 5. Set up kiri
 
@@ -209,7 +205,7 @@ services:
 Prefer bind mounts to named volumes, which hide data inside the engine.
 
 The unit orders itself after `network-online.target`, `remote-fs.target`
-(NFS mounts), `docker.service`, `podman.socket` and `kiri.service`.
+(NFS mounts), `docker.service` and `kiri.service`.
 
 Validate: `systemctl is-enabled gantry-boot.service` says `enabled`,
 `sudo gantry boot ls` lists the project, and after a reboot
@@ -220,7 +216,6 @@ Validate: `systemctl is-enabled gantry-boot.service` says `enabled`,
 | Variable | Default | Use |
 |---|---|---|
 | `GANTRY_DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API socket |
-| `GANTRY_PODMAN_HOST` | `unix:///run/podman/podman.sock` | Podman API socket |
 | `GANTRY_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri API socket |
 | `GANTRY_RUN_DIR` | `/run/gantry` | State directory |
 | `GANTRY_NETNS_DIR` | `/run/netns` | Network namespace pins |
@@ -249,15 +244,13 @@ Trigger: removing Gantry from a host.
 2. `down` also removed each project from boot. Stop the boot unit:
 
    ```sh
-   sudo systemctl disable --now gantry-boot.service
+   sudo systemctl disable --now gantry-boot.service gantry-supervise.service
    ```
 3. Remove the Docker runtime: delete the `gantry` entry under `runtimes`
    in `/etc/docker/daemon.json` and `sudo systemctl reload docker`. Do this
    only after every Gantry container is gone, or Docker cannot restart
    them.
-4. Optionally disable the Podman socket if nothing else uses it:
-   `sudo systemctl disable --now podman.socket`.
-5. Remove the package and leftovers. `purge` also removes the `gantry`
+4. Remove the package and leftovers. `purge` also removes the `gantry`
    account, its keys and the sshd and sudoers drop-ins:
 
    ```sh

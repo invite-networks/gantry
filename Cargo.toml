@@ -1,10 +1,10 @@
 [package]
 name = "gantry"
-version = "0.3.4"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Pod-first container orchestrator using the Compose format, with Docker, Podman and kiri backends"
+description = "Pod-first container orchestrator using the Compose format, with Docker and kiri backends and self-healing"
 readme = "README.md"
 repository = "https://github.com/invite-networks/gantry"
 keywords = ["containers", "pods", "compose", "macvlan", "nftables"]
@@ -35,6 +35,7 @@ serde_json = "1"
 shell-words = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bollard = { version = "0.21", default-features = false, features = ["pipe"] }
@@ -55,17 +56,19 @@ maintainer = "INVITE Networks"
 section = "admin"
 priority = "optional"
 depends = "$auto, nftables, rsync"
-recommends = "docker-ce | docker.io | podman, sudo, openssh-server"
+recommends = "docker-ce | docker.io, sudo, openssh-server"
 maintainer-scripts = "debian/"
 extended-description = """\
 Gantry runs Compose projects as pods. It creates each pod's namespaces \
 itself, puts the pod on the LAN with macvlan or ipvlan, applies an \
 nftables firewall inside the pod, and starts the pod's containers with \
-Docker, Podman or kiri."""
+Docker or kiri. A small watcher restarts services whose healthchecks keep \
+failing."""
 assets = [
     ["target/release/gantry", "usr/bin/", "755"],
     ["target/release/gantry-oci", "usr/bin/", "755"],
     ["contrib/systemd/gantry-boot.service", "lib/systemd/system/", "644"],
+    ["contrib/systemd/gantry-supervise.service", "lib/systemd/system/", "644"],
     ["contrib/project-dirs", "etc/gantry/project-dirs", "644"],
     ["contrib/remote/gantry-run", "usr/libexec/gantry/", "755"],
     ["contrib/remote/gantry-ssh", "usr/libexec/gantry/", "755"],

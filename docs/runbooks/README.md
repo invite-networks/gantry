@@ -2,7 +2,7 @@
 
 | Runbook | Use it when |
 |---|---|
-| [install.md](install.md) | Installing Gantry, setting up Docker, Podman or kiri, running projects at boot, uninstalling. |
+| [install.md](install.md) | Installing Gantry, setting up Docker or kiri, the self-healing watcher, running projects at boot, uninstalling. |
 | [operations.md](operations.md) | Running projects day to day and troubleshooting errors, networking, DHCP and names. |
 | [recovery.md](recovery.md) | After a reboot, a crash, a lost parent interface, or when manual cleanup is needed. |
 | [remote.md](remote.md) | Operating projects from another machine over SSH with the restricted `gantry` account. |

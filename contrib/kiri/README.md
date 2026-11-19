@@ -3,9 +3,9 @@
 One patch adds Podman-style `ns:<path>` namespace modes to the
 [kiri](https://github.com/libracoder/kiri) container engine. Gantry pins each
 pod's network, UTS and IPC namespaces as files (`/run/netns/gt-<project>-<pod>`
-and `/run/gantry/<project>/pods/<pod>/{uts,ipc}`) and needs Docker, Podman and
-kiri containers to join them by path, without an infra container. Docker and
-Podman can already do that; stock kiri 0.2.x answers `network
+and `/run/gantry/<project>/pods/<pod>/{uts,ipc}`) and needs Docker and kiri
+containers to join them by path, without an infra container. Docker (through
+the gantry-oci shim) and Podman can already do that; stock kiri 0.2.x answers `network
 ns:/run/netns/<pod> not found` and ignores `UTSMode` and `IpcMode`.
 
 | Patch | Adds |

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.3.x (rapid development) |
+| Version covered | 0.1.x (rapid development) |
 | Status | Draft for review |
 | Related | [Design](design.md), [Test plan](test-plan.md), [File format](../compose-spec.md) |
 
@@ -13,7 +13,8 @@ Gantry is a pod-first container orchestrator for a single Linux host. It
 reads the Compose file format, builds each pod's namespaces itself, attaches
 the pod directly to a LAN segment with macvlan or ipvlan, applies an
 nftables firewall inside the pod, and then starts the pod's containers with
-Docker, Podman or kiri.
+Docker (the primary engine) or kiri. It also restarts services whose
+healthchecks keep failing, when they opt in.
 
 This document states what Gantry must do. Each requirement has a stable ID
 that the [test plan](test-plan.md) traces back to. How the requirements are
@@ -28,9 +29,10 @@ met is in the [design](design.md).
 * LAN attachment through macvlan or ipvlan, with static addresses or a
   built-in DHCPv4 client.
 * A per-pod nftables firewall defined in the project file.
-* Docker, Podman and kiri as container runtimes, mixed freely within one
-  pod, all driven through the Docker Engine HTTP API.
-* Image builds (`build:`) through the `docker` or `podman` build tools.
+* Docker as the primary container runtime and kiri as a second one, mixed
+  freely within one pod, both driven through the Docker Engine HTTP API.
+* Self-healing of services that opt in with `health_on_failure`.
+* Image builds (`build:`) through the `docker` build tool.
 * A Compose-compatible file format with documented extensions.
 * A command line interface modeled on `docker compose`.
 
@@ -40,6 +42,7 @@ met is in the [design](design.md).
 * Bridge networks, NAT and host port publishing.
 * Replicas and scaling (`deploy.replicas`, `scale`). Ignored with a warning.
 * Rootless operation.
+* Podman. Supported in the 0.2 and 0.3 test releases, removed in 0.1.0.
 * DHCPv6. IPv6 addresses come from SLAAC or static configuration.
 * Any network listener of its own. Gantry exposes no TCP or HTTP port.
 
@@ -49,9 +52,10 @@ met is in the [design](design.md).
 |---|---|
 | Operator | A person with root on the host who writes project files and runs `gantry` commands. |
 | Service consumer | A machine on the LAN that reaches a pod at its LAN address. |
-| Container engine | Docker (`dockerd`), Podman (its Docker-compatible API service) or kiri. Creates and runs containers on request. |
+| Container engine | Docker (`dockerd`) or kiri. Creates and runs containers on request. |
 | LAN infrastructure | The switch, router and DHCP server on the segment the pods join. |
-| Init system | systemd, which starts registered projects at boot through `gantry-boot.service`. |
+| Init system | systemd, which starts registered projects at boot through `gantry-boot.service` and runs the health watcher as `gantry-supervise.service`. |
+| gantry-agent | The Gantry Server agent. When present it runs the health watcher itself, through the library, instead of `gantry-supervise.service`. |
 
 ## 4. Definitions
 
@@ -61,7 +65,8 @@ met is in the [design](design.md).
 | Pod | A set of namespaces created by Gantry that one or more containers join. |
 | Service | One container definition. Each service runs in exactly one pod. |
 | Network | One entry in a pod's `network:` list: a parent interface on the host, an address with prefix (or DHCP), and a gateway. |
-| Runtime | The engine that runs a service: `docker`, `podman` or `kiri`. |
+| Runtime | The engine that runs a service: `docker` or `kiri`. |
+| Health watcher | The long-running loop (`gantry supervise`, or gantry-agent) that acts on unhealthy containers. |
 | Engine socket | The Unix socket where a runtime serves the Docker Engine API. |
 
 ## 5. Functional requirements
@@ -137,19 +142,19 @@ Priority: **M** must, **S** should, **C** could.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-RT-01 | Gantry shall drive every runtime through the Docker Engine HTTP API over a Unix socket. The `docker` and `podman` command line tools shall not be required, except to build images for services with `build:` (FR-CMP-09). | M |
+| FR-RT-01 | Gantry shall drive every runtime through the Docker Engine HTTP API over a Unix socket. The `docker` command line tool shall not be required, except to build images for services with `build:` (FR-CMP-09). | M |
 | FR-RT-02 | Docker shall be reached at `/var/run/docker.sock`. | M |
 | FR-RT-03 | kiri shall be reached at `/run/kiri/docker.sock`. | M |
-| FR-RT-04 | Podman shall be reached through its Docker-compatible API at `/run/podman/podman.sock` (systemd socket activation). If the socket does not answer, Gantry shall run `systemctl start podman.socket`; if that is unavailable, it shall start a private `podman system service` on a socket in its run directory that exits after 5 idle minutes. | M |
+| FR-RT-04 | Removed in 0.1.0 (Podman socket). | - |
 | FR-RT-05 | Docker containers shall join the pod through the `gantry-oci` runtime shim, using the `gantry` runtime, network mode `none`, and `io.gantry.netns`, `io.gantry.utsns` and `io.gantry.ipcns` annotations. | M |
-| FR-RT-06 | Podman and kiri containers shall join the pod's network, UTS and IPC namespaces with modes `ns:<path>` (kiri with the patches in `contrib/kiri`). | M |
+| FR-RT-06 | kiri containers shall join the pod's network, UTS and IPC namespaces with modes `ns:<path>` (kiri with the patches in `contrib/kiri`). | M |
 | FR-RT-07 | Services in one pod shall be allowed to use different runtimes. | M |
 | FR-RT-08 | The runtime shall be selectable per project (`runtime:`), per pod, per service, and forced for all services with `--runtime`. | M |
-| FR-RT-09 | `gantry setup docker` shall register the shim in the Docker daemon configuration and reload `dockerd`. `gantry setup podman` shall run `systemctl enable --now podman.socket`. | M |
-| FR-RT-10 | Bare image names shall be qualified to `docker.io` for Podman. | M |
+| FR-RT-09 | `gantry setup docker` shall register the shim in the Docker daemon configuration and reload `dockerd`. | M |
+| FR-RT-10 | Removed in 0.1.0 (Podman image names). | - |
 | FR-RT-11 | When a service's runtime changes, its container on the previous runtime shall be removed. | M |
 | FR-RT-12 | Gantry shall check that each engine needed by the command is reachable before changing anything, and report which socket failed. | M |
-| FR-RT-13 | Image pulls shall use registry credentials from the Docker and Podman auth files and their credential helpers. | M |
+| FR-RT-13 | Image pulls shall use registry credentials from the Docker auth file and its credential helpers. | M |
 | FR-RT-14 | `exec` (including interactive TTY with resize), `logs`, pulls, container lifecycle, volumes and health waits shall all use the engine API. | M |
 
 ### 5.7 Compose compatibility
@@ -164,7 +169,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CMP-06 | Labels under `io.gantry.` shall be reserved and rejected in project files. | M |
 | FR-CMP-07 | Named volumes shall be created in the service's engine as `<project>_<name>` unless external. | M |
 | FR-CMP-08 | The project name shall come from `name:`, `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. | M |
-| FR-CMP-09 | `build:` shall be supported (context, Dockerfile, args, target and the other Compose build keys) by running `docker build` for Docker services and `podman build` for Podman services, so BuildKit, `.dockerignore` and build secrets behave as with Compose. For kiri services, the image is built with `docker build` against the kiri socket using the classic builder. | M |
+| FR-CMP-09 | `build:` shall be supported (context, Dockerfile, args, target and the other Compose build keys) by running `docker build` for Docker services, so BuildKit, `.dockerignore` and build secrets behave as with Compose. For kiri services, the image is built with `docker build` against the kiri socket using the classic builder. | M |
 
 ### 5.8 Command line
 
@@ -201,6 +206,22 @@ Priority: **M** must, **S** should, **C** could.
 | FR-ST-04 | A container restarted by its engine (restart policy or manual restart) shall rejoin its pod. | M |
 | FR-ST-05 | A service without `restart:` shall get `unless-stopped`. `restart: "no"` shall opt out. One-off `run` containers never get a restart policy. | M |
 
+### 5.10 Self-healing
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-HEAL-01 | A service shall accept `health_on_failure` with `none` (default), `restart` or `stop`. Any other value, or `restart` or `stop` with the healthcheck disabled, shall be a configuration error. | M |
+| FR-HEAL-02 | The value shall be recorded on the container as the label `io.gantry.health-on-failure` (absent for `none`), so the watcher needs no project files and changing the value recreates the container. | M |
+| FR-HEAL-03 | The health watcher shall act only on running containers that carry the label and that their engine reports `unhealthy`, on Docker and kiri alike. It shall never start a stopped container. | M |
+| FR-HEAL-04 | Before acting, the watcher shall take the project's command lock without waiting, skip the project for that poll if a `gantry` command holds it, and inspect the container again under the lock. | M |
+| FR-HEAL-05 | `restart` shall restart through the engine's restart endpoint: the first restart at once, later ones after a wait that doubles from 30 seconds to at most 5 minutes. After 5 restarts within 30 minutes it shall give up on that container until it is healthy again or recreated. | M |
+| FR-HEAL-06 | `stop` shall stop the container through the engine and leave it stopped. | M |
+| FR-HEAL-07 | Only one watcher shall run per host, enforced by an exclusive lock on `/run/gantry/heal.lock`. | M |
+| FR-HEAL-08 | The watcher shall be a library function that takes a cancellation token, a per-project pause control and a channel for its actions, and returns once any action in progress has finished. Sending an action shall never block the watcher. | M |
+| FR-HEAL-09 | Each action shall be reported with project, pod, service, container name and ID, engine, kind (`restarted`, `stopped`, `backing_off`, `gave_up`, `failed`), attempt, cap, the next backoff delay, the trigger, any error, and a UTC timestamp, and shall be serializable. | M |
+| FR-HEAL-10 | `gantry supervise` shall run the watcher for Docker and kiri until SIGTERM or SIGINT. The package shall install `gantry-supervise.service`, enable it on first install, and keep it disabled across upgrades once an operator or gantry-agent disables it. | M |
+| FR-HEAL-11 | `gantry version` shall list the features of the build, including `health_on_failure` and `supervise`, and the library shall export the same list. | S |
+
 ## 6. Non-functional requirements
 
 ### 6.1 Platform
@@ -209,7 +230,7 @@ Priority: **M** must, **S** should, **C** could.
 |---|---|
 | NFR-PLAT-01 | Gantry shall run on Linux only, as root. Rootless operation is not supported. |
 | NFR-PLAT-02 | Reference platform: Debian 13, kernel 6.12 or later, with nftables. Other current distributions with the same kernel features are expected to work. |
-| NFR-PLAT-03 | Required host tools: `nft` for pods with a firewall. At least one engine: Docker Engine with API 1.43 or later (annotations), Podman 5 with its API service, or kiri 0.2 with the `ns:<path>` patch. The `docker` or `podman` CLI only for projects that use `build:`. `runc` (or another OCI runtime named by `GANTRY_OCI_RUNTIME`) for Docker. |
+| NFR-PLAT-03 | Required host tools: `nft` for pods with a firewall. At least one engine: Docker Engine with API 1.43 or later (annotations), or kiri 0.2 with the `ns:<path>` patch. The `docker` CLI only for projects that use `build:`. `runc` (or another OCI runtime named by `GANTRY_OCI_RUNTIME`) for Docker. |
 | NFR-PLAT-04 | Gantry shall be distributed as two static-friendly binaries, `gantry` and `gantry-oci`, built with Rust 2024 edition. |
 
 ### 6.2 Security
@@ -221,7 +242,7 @@ Priority: **M** must, **S** should, **C** could.
 | NFR-SEC-03 | All project input that reaches the kernel, nftables, hosts files or resolv.conf shall be validated (hostnames, DNS search and options, firewall fields, interface names). |
 | NFR-SEC-04 | Signals shall only be sent to a DHCP agent after its PID file is verified against `/proc/<pid>/cmdline`. |
 | NFR-SEC-05 | Namespace files and state files shall be created race-free and written atomically. |
-| NFR-SEC-06 | A private Podman API service started by Gantry shall listen only on a Unix socket under the Gantry run directory, readable by root only, and exit after 5 idle minutes. |
+| NFR-SEC-06 | Removed in 0.1.0 (private Podman API service). |
 | NFR-SEC-07 | The library shall not panic in production paths (no `unwrap`, `expect` or `panic` outside tests). |
 | NFR-SEC-08 | Random identifiers shall come from the operating system's random source. |
 | NFR-SEC-09 | Dependencies shall pass `cargo audit` and `cargo deny` in CI. |
@@ -281,6 +302,6 @@ A release is acceptable when:
 2. Unit tests, format, clippy with warnings denied, `cargo audit` and
    `cargo deny` pass in CI.
 3. The live integration suite passes on the reference platform for Docker,
-   Podman, kiri, DHCP and ipvlan, using the API-based engine layer.
+   kiri, DHCP, ipvlan and self-healing, using the API-based engine layer.
 4. The runbooks have been executed on a test host by someone other than
    their author.

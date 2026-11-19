@@ -113,7 +113,7 @@ async fn create(project: &Project, pod: &Pod, hash: String) -> Result<PodState> 
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    // Docker, Podman and kiri give each container's own network namespace
+    // Docker and kiri give each container's own network namespace
     // these defaults (non-root can bind low ports and ping). Pods replace
     // that namespace, so they get the same defaults unless the pod sets them.
     for (k, v) in [

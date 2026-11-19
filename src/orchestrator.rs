@@ -44,14 +44,9 @@ impl Orchestrator {
         engines
             .entry(project.runtime)
             .or_insert_with(|| Engine::new(project.runtime));
-        let all = [RuntimeKind::Docker, RuntimeKind::Podman, RuntimeKind::Kiri]
+        let all = [RuntimeKind::Docker, RuntimeKind::Kiri]
             .into_iter()
-            .map(|k| {
-                engines
-                    .get(&k)
-                    .cloned()
-                    .unwrap_or_else(|| Engine::passive(k))
-            })
+            .map(|k| engines.get(&k).cloned().unwrap_or_else(|| Engine::new(k)))
             .collect();
         Self {
             project,
@@ -592,10 +587,8 @@ impl Orchestrator {
         timeout: Duration,
     ) -> Result<()> {
         let svc = &self.project.services[service];
-        let e = self.engine(svc.runtime);
         let deadline = tokio::time::Instant::now() + timeout;
         let mut announced = false;
-        let mut last_check = None::<tokio::time::Instant>;
         loop {
             let info = self.owned(svc).await?;
             let ok = match (&info, cond) {
@@ -650,14 +643,6 @@ impl Orchestrator {
                 announced = true;
             }
             let now = tokio::time::Instant::now();
-            if cond == DependsCondition::ServiceHealthy
-                && last_check.is_none_or(|t| now - t >= Duration::from_secs(1))
-            {
-                // Podman runs healthchecks from systemd timers when it can;
-                // run one directly so waiting works everywhere.
-                let _ = e.run_healthcheck(&svc.container_name).await;
-                last_check = Some(now);
-            }
             if now >= deadline {
                 return Err(Error::engine(format!("timed out waiting for {service}")));
             }
@@ -794,8 +779,7 @@ impl Orchestrator {
     }
 }
 
-/// The image reference to check for a service (built Podman images live
-/// under `localhost/`).
+/// The image reference to check for a service.
 fn image_ref(svc: &Service) -> String {
     crate::engine::spec::service_image(svc)
 }

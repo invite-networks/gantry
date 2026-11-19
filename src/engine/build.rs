@@ -1,5 +1,5 @@
-//! Image builds. Builds go through the engine's own CLI (`docker build`,
-//! `podman build`) rather than the API: the CLI brings BuildKit,
+//! Image builds. Builds go through the engine's own CLI (`docker build`)
+//! rather than the API: the CLI brings BuildKit,
 //! `.dockerignore` handling and build secrets, and a build takes seconds
 //! to minutes, so the cost of one process does not matter.
 
@@ -100,20 +100,14 @@ impl Engine {
         let inline_str = inline.as_ref().map(|p| p.display().to_string());
         let args = build_args(svc, project, inline_str.as_deref());
 
-        let mut cmd = match self.kind {
-            RuntimeKind::Podman => tokio::process::Command::new("podman"),
-            RuntimeKind::Docker | RuntimeKind::Kiri => {
-                let mut c = tokio::process::Command::new("docker");
-                c.arg("-H")
-                    .arg(format!("unix://{}", self.socket().await?.display()));
-                if self.kind == RuntimeKind::Kiri {
-                    // kiri implements the classic build endpoint, not BuildKit
-                    // sessions.
-                    c.env("DOCKER_BUILDKIT", "0");
-                }
-                c
-            }
-        };
+        let mut cmd = tokio::process::Command::new("docker");
+        cmd.arg("-H")
+            .arg(format!("unix://{}", self.socket().await?.display()));
+        if self.kind == RuntimeKind::Kiri {
+            // kiri implements the classic build endpoint, not BuildKit
+            // sessions.
+            cmd.env("DOCKER_BUILDKIT", "0");
+        }
         cmd.args(&args).stdin(Stdio::null()).kill_on_drop(true);
         let status = cmd.status().await;
         if let Some(p) = &inline {
@@ -121,14 +115,8 @@ impl Engine {
         }
         let status = status.map_err(|e| {
             Error::engine(format!(
-                "{}: building {} needs the {} CLI: {e}",
-                svc.name,
-                svc.image,
-                if self.kind == RuntimeKind::Podman {
-                    "podman"
-                } else {
-                    "docker"
-                }
+                "{}: building {} needs the docker CLI: {e}",
+                svc.name, svc.image,
             ))
         })?;
         if status.success() {

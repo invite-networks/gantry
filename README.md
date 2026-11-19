@@ -1,7 +1,7 @@
 # Gantry
 
 Gantry is a replacement for Docker Compose that adds pods, and runs those
-pods on whichever container runtime you choose: Docker, Podman or kiri. You
+pods on Docker, with kiri also supported. You
 keep writing Compose files. Gantry groups services into pods, puts each pod
 straight onto your LAN with macvlan or ipvlan, applies an nftables firewall
 inside the pod, and starts the pod's containers with the runtime each
@@ -12,23 +12,25 @@ service asks for.
 Compose is the format most people already know, but it has no idea of a
 pod. Every service gets its own network namespace, and putting a group of
 containers on the LAN with one address, one hostname and one firewall means
-fighting the bridge network. Kubernetes and Podman have pods, but
-Kubernetes is far more than a single host needs, and Podman pods only work
-with Podman.
+fighting the bridge network. Kubernetes has pods, but it is far more than
+a single host needs.
 
 Gantry fills that gap:
 
 * **Pods in plain Compose.** Services that belong together share one
   network, UTS and IPC namespace and talk over `127.0.0.1`, as in a
   Kubernetes pod.
-* **Any runtime, even inside one pod.** Docker, Podman and kiri containers
-  can sit side by side in the same pod. Pick the runtime per project or per
-  service, and switch without rewriting the file.
+* **Docker first, kiri too, even inside one pod.** Docker is the primary
+  engine. kiri containers can sit beside Docker ones in the same pod; pick
+  the runtime per project or per service.
 * **First-class LAN networking.** Each pod gets its own address on a real
   network (static or DHCP, IPv4 and IPv6) and its own firewall, so it
   behaves like a small host rather than a set of published ports.
-* **One small binary.** No daemon of its own, no cluster, and systemd
-  brings projects back at boot.
+* **Self-healing.** A service with `health_on_failure: restart` is
+  restarted when its healthcheck keeps failing, which engines do not do on
+  their own.
+* **One small binary.** No cluster. systemd brings projects back at boot,
+  and one small watcher (`gantry supervise`) heals unhealthy services.
 
 There is no infra or pause container. Gantry pins the namespaces the same
 way `ip netns add` does, and every container joins them by path.
@@ -41,15 +43,16 @@ way `ip netns add` does, and every container joins them by path.
         +-------+-----------------------+---------+-----------+
         | pod web  (netns, uts, ipc,    | pod data            |
         |          nftables)            |                     |
-        |  nginx (docker)  <-127.0.0.1->|  redis (podman)     |
-        |  sidecar (podman)             |                     |
+        |  nginx (docker)  <-127.0.0.1->|  redis (docker)     |
+        |  sidecar (kiri)               |                     |
         +-------------------------------+---------------------+
 ```
 
 ## Status
 
-Version 0.3.2, rapid development. Tested on Debian 13 (kernel 6.12) with
-Docker 29.9, Podman 5.4 and kiri 0.2.0. Rootful only.
+Version 0.1.0, rapid development. Tested on Debian 13 (kernel 6.12) with
+Docker 29.9 and kiri 0.2.0. Rootful only. Podman support was removed in
+0.1.0.
 
 ## Install
 
@@ -88,7 +91,6 @@ Then, once per host, for each engine you use:
 
 ```sh
 sudo gantry setup docker      # registers the gantry-oci runtime shim with dockerd
-sudo gantry setup podman      # enables Podman's API socket (podman.socket)
 ```
 
 For kiri, see `contrib/kiri`.
@@ -109,7 +111,7 @@ services:
     image: nginx:alpine
   app:
     build: ./app
-    runtime: podman
+    health_on_failure: restart     # restart it when its healthcheck keeps failing
 ```
 
 With one pod there is nothing to name: services join it. The pod gets the default
@@ -148,11 +150,12 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 | `ls` | Projects with pods on this host. |
 | `pod ls`, `pod inspect POD`, `pod exec POD cmd...` | Pods, their addresses, state and DHCP leases; run a host command (`ip`, `tcpdump`, `nft`) in a pod's network namespace. |
 | `firewall show [POD] [--raw]`, `firewall reload` | Every pod's loaded rules with hit counts (`--raw`: the generated ruleset and the nft listing); re-render hosts files and firewalls. |
-| `setup docker`, `setup podman` | One time host setup per engine. |
-| `version`, `completion SHELL` | Versions of Gantry and each engine; shell completions. |
+| `setup docker` | One time host setup for Docker. |
+| `supervise` | Watch every engine and act on unhealthy services that set `health_on_failure`. Runs as `gantry-supervise.service`. |
+| `version`, `completion SHELL` | Versions of Gantry and each engine, and the features this build supports; shell completions. |
 
 Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
-`--env-file`, `--profile`, `--runtime docker|podman|kiri`, `--log-level`.
+`--env-file`, `--profile`, `--runtime docker|kiri`, `--log-level`.
 
 ## How it works
 
@@ -185,16 +188,12 @@ operation:
 | Runtime | Socket | How containers join the pod |
 |---|---|---|
 | Docker | `/var/run/docker.sock` | `gantry-oci` runtime shim (below) |
-| Podman | `/run/podman/podman.sock` (Docker-compatible API) | `ns:<path>` network, UTS and IPC modes |
 | kiri | `/run/kiri/docker.sock` | `ns:<path>` modes, with the patches in `contrib/kiri` |
 
-If Podman's socket is not active, Gantry starts `podman.socket`, or as a
-last resort a private `podman system service` that exits when idle.
-
 Image builds (`build:`) are the one exception: they run through
-`docker build` or `podman build`, which brings BuildKit, `.dockerignore` and
+`docker build`, which brings BuildKit, `.dockerignore` and
 build secrets. Registry credentials for pulls come from the same files
-`docker login` and `podman login` write, including credential helpers.
+`docker login` writes, including credential helpers.
 
 ### Docker and the runtime shim
 
@@ -210,7 +209,8 @@ the shim again and the container rejoins the pod.
 
 ### Performance
 
-Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman):
+Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman, in
+a release that still supported Podman):
 
 | Operation | CLI-driven prototype | Gantry (API) |
 |---|---|---|
@@ -218,6 +218,39 @@ Measured on the test host with 8 services in 2 pods (4 Docker, 4 Podman):
 | `up` with nothing to change | 820 ms | 80 ms |
 | `ps` | 128 ms | 45 ms |
 | `down` | 1.35 s | 0.35 to 0.6 s |
+
+## Self-healing
+
+Docker and kiri run healthchecks and mark a failing container `unhealthy`,
+but neither restarts it: restart policies only cover containers that exit.
+A service opts in to healing:
+
+```yaml
+services:
+  app:
+    image: example/app:1
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/health]
+      interval: 30s
+      retries: 3
+    health_on_failure: restart   # none (default), restart or stop
+```
+
+`gantry-supervise.service` (installed and enabled by the package) runs
+`gantry supervise`, which checks every engine every 10 seconds and acts on
+running containers that are `unhealthy`:
+
+* `restart` restarts the container. The first restart is immediate, then
+  the wait doubles from 30 seconds up to 5 minutes. After 5 restarts in 30
+  minutes it gives up and leaves the container running until it turns
+  healthy again or is recreated.
+* `stop` stops it and leaves it stopped.
+
+It never touches a stopped container, skips a project while a `gantry`
+command (including boot) is working on it, and logs every action to the
+journal (`journalctl -u gantry-supervise`). One watcher runs per host;
+gantry-agent runs the same watcher and disables this unit when it takes
+over.
 
 ## Running at boot
 
@@ -281,7 +314,6 @@ See [docs/runbooks/remote.md](docs/runbooks/remote.md).
 | Variable | Default | Use |
 |---|---|---|
 | `GANTRY_DOCKER_HOST` | `unix:///var/run/docker.sock` | Docker API socket |
-| `GANTRY_PODMAN_HOST` | `unix:///run/podman/podman.sock` | Podman API socket |
 | `GANTRY_KIRI_HOST` | `unix:///run/kiri/docker.sock` | kiri API socket |
 | `GANTRY_RUN_DIR` | `/run/gantry` | State directory |
 | `GANTRY_NETNS_DIR` | `/run/netns` | Where network namespaces are pinned |

@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Product | Gantry |
-| Version covered | 0.3.x, with the Docker Engine API engine layer |
+| Version covered | 0.1.x, with the Docker Engine API engine layer |
 | Status | Draft for review |
 | Related | [Requirements](requirements.md), [Design](design.md) |
 
@@ -25,10 +25,10 @@ behavior changes on purpose. No tests are marked as regression tests yet.
 | ID | Environment | Use |
 |---|---|---|
 | ENV-CI | GitHub Actions, `ubuntu-latest`, stable Rust | Format, clippy, unit tests, `cargo audit`, `cargo deny`. |
-| ENV-LAB | Linux test host with Docker, Podman, patched kiri, nftables, dnsmasq, and the isolated DHCP bridge from `tests/integration/dhcp-lab.sh` | Full integration suite without touching a real network. |
+| ENV-LAB | Linux test host with Docker, patched kiri, nftables, dnsmasq, and the isolated DHCP bridge from `tests/integration/dhcp-lab.sh` | Full integration suite without touching a real network. |
 | ENV-LAN | Same host, with a LAN segment that has free addresses and a gateway | macvlan and ipvlan against a real switch and router, examples, manual checks. |
 
-Reference platform: Debian 13, kernel 6.12, Docker 29, Podman 5.4, kiri 0.2
+Reference platform: Debian 13, kernel 6.12, Docker 29, kiri 0.2
 with the `contrib/kiri` patch.
 
 From a non-Linux workstation, `scripts/remote.sh` runs commands on a Linux
@@ -47,8 +47,7 @@ Run with `cargo test --all-targets`.
 | `profiles_filter_services` | `src/compose/normalize.rs` | FR-CMP-03 |
 | `durations`, `sizes`, `cli_format` | `src/compose/units.rs` | FR-CMP-03 |
 | `docker_spec` | `src/engine/spec.rs` | FR-RT-05 |
-| `podman_and_kiri_spec` | `src/engine/spec.rs` | FR-RT-06 |
-| `podman_images_are_qualified` | `src/engine/spec.rs` | FR-RT-10 |
+| `kiri_spec` | `src/engine/spec.rs` | FR-RT-06 |
 | `built_images` | `src/engine/spec.rs` | FR-CMP-09 |
 | `hash_is_stable_and_tracks_changes` | `src/engine/spec.rs` | FR-CLI-02, FR-ST-02 |
 | `references`, `registries`, `auth_entries` | `src/engine/auth.rs` | FR-RT-13 |
@@ -62,6 +61,10 @@ Run with `cargo test --all-targets`.
 | `resolv_roundtrip`, `hosts_dedupes_names` | `src/pod/files.rs` | FR-DNS-01, FR-DNS-04 |
 | `ack_parsing` | `src/pod/dhcp.rs` | FR-ADDR-03, FR-ADDR-06 |
 | `fnv_known_values` | `src/util.rs` | FR-CLI-02 |
+| `pod_network_defaults` (`health_on_failure` values, bad value, disabled healthcheck) | `src/compose/normalize.rs` | FR-HEAL-01 |
+| `backoff_doubles_to_the_cap` | `src/heal.rs` | FR-HEAL-05 |
+| `control_pauses_per_project` | `src/heal.rs` | FR-HEAL-08 |
+| `actions_serialize_snake_case` | `src/heal.rs` | FR-HEAL-09 |
 
 ### 3.1 Unit tests changed by the engine move
 
@@ -70,21 +73,22 @@ tests `docker_args`, `podman_and_kiri_args` and `hash_changes_with_pod_id`
 became `docker_spec`, `podman_and_kiri_spec` and
 `hash_is_stable_and_tracks_changes`, which check the create body: for
 Docker, `Runtime: gantry`, `NetworkMode: none`, the three annotations, the
-reserved labels and read-only `/etc` mounts; for Podman, `ns:` for network,
-UTS and IPC, and the same for kiri.
+reserved labels and read-only `/etc` mounts; for kiri, `ns:` for network,
+UTS and IPC. In 0.1.0, with Podman removed, `podman_and_kiri_spec` became
+`kiri_spec` and `podman_images_are_qualified` was dropped.
 
 ### 3.2 Unit tests to add
 
 | Planned test | Covers |
 |---|---|
-| Socket selection and `GANTRY_*_HOST` overrides per runtime | FR-RT-02, FR-RT-03, FR-RT-04, NFR-OPS-04 |
-| Podman fallback order: socket, then `systemctl start podman.socket`, then private service | FR-RT-04 |
+| Socket selection and `GANTRY_*_HOST` overrides per runtime | FR-RT-02, FR-RT-03, NFR-OPS-04 |
+| The heal label is set for `restart` and `stop` and absent for `none` | FR-HEAL-02 |
 | Shim rejects paths outside allowed directories and paths with `..` | NFR-SEC-02 |
 | Reserved `io.gantry.` labels rejected | FR-CMP-06 |
 | Validation of hostnames, DNS options and firewall comments | FR-FW-08, NFR-SEC-03 |
 | Start order with `depends_on` cycles and missing services | FR-CLI-01 |
 | Dependency levels computed from `depends_on` | NFR-PERF-06 |
-| Compose `build:` keys map to the right `docker build` and `podman build` arguments | FR-CMP-09 |
+| Compose `build:` keys map to the right `docker build` arguments | FR-CMP-09 |
 | `GANTRY_NFT` ignored in release builds | NFR-SEC-10 |
 
 ## 4. Integration tests
@@ -107,14 +111,15 @@ the release.
 ### 4.2 `tests/integration/run.sh`
 
 Needs root, `gantry` on `PATH`, the engines under test, and three free
-addresses on a parent interface. Scenarios are arguments; with none it runs
-`docker podman dhcp`. Further scenarios: `kiri`, `dhcpmove`, `ipv6`.
+addresses on a parent interface (except `heal`, which uses loopback-only
+pods). Scenarios are arguments; with none it runs `docker dhcp heal`.
+Further scenarios: `kiri`, `dhcpmove`, `ipv6`.
 
 ```sh
 sudo tests/integration/dhcp-lab.sh up
 sudo GT_PARENT=gtdhcp0 GT_PREFIX=24 GT_GATEWAY=10.99.0.1 \
      GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13 \
-     tests/integration/run.sh docker podman kiri dhcp dhcpmove ipv6
+     tests/integration/run.sh docker kiri dhcp dhcpmove ipv6 heal
 ```
 
 The e2e scenario (`tests/integration/e2e/gantry.yaml`) runs once per
@@ -139,9 +144,9 @@ no firewall).
 | Default route via gateway | e2e | FR-NET-05 |
 | nft table loaded in pod | e2e | FR-FW-01 |
 | Pod without a `firewall:` section gets the default rules | e2e | FR-FW-01 |
-| `data move` bind to bind and named volume to bind on Docker, Podman and kiri, with a writer running: data identical, no writes lost at cutover, second run is a no-op | manual (2026-11-18) | FR-CLI-17 |
+| `data move` bind to bind and named volume to bind on Docker, Podman (since removed) and kiri, with a writer running: data identical, no writes lost at cutover, second run is a no-op | manual (2026-11-18) | FR-CLI-17 |
 | `up` refuses a moved path before `data move`; a non-empty destination is refused | manual (2026-11-18) | FR-CLI-17, FR-CLI-18 |
-| Reboot of the reference host (0.3.2 package) with three registered projects under /mnt on Podman (priority 10), kiri (50) and Docker (100, db at service priority 10 with a healthcheck): levels in order within 0.6 s, web created 3.3 s later once db was healthy, every pod back with its address and the default firewall, unit exit 0. The first reboot found Docker's restart-at-boot creating the pod's resolv.conf as a directory (fixed) | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07, MT-03 |
+| Reboot of the reference host (0.3.2 test package, before the 0.1.0 reset) with three registered projects under /mnt on Podman (priority 10, since removed), kiri (50) and Docker (100, db at service priority 10 with a healthcheck): levels in order within 0.6 s, web created 3.3 s later once db was healthy, every pod back with its address and the default firewall, unit exit 0. The first reboot found Docker's restart-at-boot creating the pod's resolv.conf as a directory (fixed) | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07, MT-03 |
 | `boot stop` then `boot start` with pods at priority 10, 50 and 100 in two projects: levels in order, a priority 100 service waits for its pod's priority 10 service to be healthy; `down` unregisters | manual (2026-11-18) | FR-ST-03, FR-ST-06, FR-ST-07 |
 | Host has no `gantry` table | e2e | FR-FW-02, NFR-SEC-01 |
 | `ps` shows redis healthy | e2e | FR-CLI-05, FR-CLI-08 |
@@ -163,6 +168,14 @@ no firewall).
 | Hosts file lists both address families | ipv6 | FR-DNS-03 |
 | ping6 by pod name | ipv6 | FR-DNS-03 |
 | Firewall allows `pod:b` and blocks pod c over IPv6 | ipv6 | FR-FW-05 |
+| A second `gantry supervise` is refused while one runs | heal | FR-HEAL-07 |
+| `restart`: the unhealthy service is restarted and running again | heal | FR-HEAL-03, FR-HEAL-05 |
+| `stop`: the unhealthy service is stopped and stays down | heal | FR-HEAL-06 |
+| `none`: an unhealthy service without the key is never acted on | heal | FR-HEAL-01, FR-HEAL-03 |
+| SIGTERM stops the watcher cleanly | heal | FR-HEAL-08, FR-HEAL-10 |
+
+`heal` runs once per engine in `GT_HEAL_RUNTIMES` (default `docker kiri`)
+and takes about 40 seconds per engine.
 
 `dhcpmove` restarts the lab's dnsmasq with a different pool
 (`dhcp-lab.sh move`) under a running pod and takes about a minute, because
@@ -176,7 +189,7 @@ The e2e scenario reads `GT_DRIVER`, so the same checks run over ipvlan
 ```sh
 sudo GT_DRIVER=ipvlan GT_PARENT=... GT_PREFIX=... GT_GATEWAY=... \
      GT_IP1=... GT_IP2=... GT_IP3=... \
-     tests/integration/run.sh docker podman
+     tests/integration/run.sh docker kiri
 ```
 
 Covers FR-NET-02 with every e2e check above. Run it on a parent that has no
@@ -188,25 +201,25 @@ These checks target the API-based engine layer and are added to `run.sh`:
 
 | Planned check | Covers |
 |---|---|
-| Suite passes with the `docker` and `podman` CLIs absent from `PATH` (project without `build:`) | FR-RT-01, FR-RT-14 |
-| Podman scenario passes with `podman.socket` enabled | FR-RT-04, FR-RT-09 |
-| Podman scenario passes with `podman.socket` stopped but enabled (Gantry starts it) | FR-RT-04 |
-| Podman scenario passes with `podman.socket` masked (private service fallback); the socket is mode 0600 and the service exits after 5 idle minutes | FR-RT-04, NFR-SEC-06 |
+| Suite passes with the `docker` CLI absent from `PATH` (project without `build:`) | FR-RT-01, FR-RT-14 |
 | Pull of an image from a registry that needs credentials | FR-RT-13 |
 | `exec` with a TTY follows a terminal resize | FR-RT-14 |
-| `gantry build` and `up --build` build a service on Docker and on Podman; plain `up` builds only when the image is missing | FR-CMP-09, FR-CLI-11 |
+| `gantry build` and `up --build` build a service on Docker; plain `up` builds only when the image is missing | FR-CMP-09, FR-CLI-11 |
 | `build:` on a kiri service builds through the classic builder | FR-CMP-09 |
 | A project with several independent services starts them concurrently (start times overlap in engine events) | NFR-PERF-06 |
 | `up` against a stopped engine fails before any pod exists and names the socket | FR-RT-12 |
 | `exec` exit code and `logs --tail` match the container | FR-CLI-05 |
 | Changing a service's runtime removes the old container | FR-RT-11 |
-| `setup podman` enables the socket and is idempotent | FR-RT-09 |
+| The watcher skips a project while `gantry up --wait` holds its lock, then acts once it is released | FR-HEAL-04 |
+| After 5 restarts in 30 minutes the watcher reports `gave_up` and stops restarting | FR-HEAL-05 |
+| A fresh install enables `gantry-supervise.service`; after `systemctl disable` an upgrade keeps it disabled | FR-HEAL-10 |
 | `setup docker` is idempotent and keeps other keys in `daemon.json` | FR-RT-09 |
 
 ### 4.5 Verified by hand
 
-Run on the test host on 2026-11-15 against the API engine; candidates for
-automation in 4.4.
+Run on the test host on 2026-11-15 against the API engine, before the
+0.1.0 reset removed Podman; candidates for automation in 4.4. On
+2026-11-19 the 0.1.0 candidate passed `run.sh heal` on Docker and kiri.
 
 | Check | Result |
 |---|---|
@@ -232,7 +245,7 @@ Run on ENV-LAN before a release. Record revision, host and result.
 | ID | Procedure | Expected | Covers |
 |---|---|---|---|
 | MT-01 | `examples/basic`: `up -d`, reach both pods from another LAN machine, `down`. | Pods answer at their addresses; nothing left in `ip netns` or `/run/gantry`. | FR-NET-01, FR-NET-06, FR-CLI-04 |
-| MT-02 | `examples/mixed`: one pod with Docker, Podman and kiri services. | All three share the pod address and loopback. | FR-RT-07 |
+| MT-02 | `examples/mixed`: one pod with Docker and kiri services. | Both share the pod address and loopback. | FR-RT-07 |
 | MT-03 | Reboot with the project registered for boot (`gantry boot ls`). | Project is up after boot; old containers replaced. | FR-ST-02, FR-ST-03 |
 | MT-04 | Change a DHCP reservation so the pod gets a new address on renew. | Other pods' hosts files and firewall rules follow the new address. | FR-ADDR-05 |
 | MT-05 | Edit a pod's address and run `up`. | Pod and its containers are recreated; other pods untouched. | FR-POD-07 |
@@ -281,13 +294,15 @@ candidates for new tests.
 | FR-FW-01 to FR-FW-07 | unit firewall tests, e2e firewall checks |
 | FR-FW-08 | Planned unit test (3.2) |
 | FR-FW-09 | MT-08 |
-| FR-RT-01 to FR-RT-04, FR-RT-12 | Planned engine API checks (4.4), e2e on each runtime |
+| FR-RT-01 to FR-RT-03, FR-RT-12 | Planned engine API checks (4.4), e2e on each runtime |
 | FR-RT-05, FR-RT-06 | unit engine and shim tests, e2e per runtime |
 | FR-RT-07 | MT-02 |
-| FR-RT-08, FR-RT-10, FR-RT-11 | unit engine tests, planned check (4.4) |
+| FR-RT-08, FR-RT-11 | unit engine tests, planned check (4.4) |
 | FR-RT-13 | auth unit tests, planned check (4.4) |
 | FR-RT-14 | Planned checks (4.4) |
 | FR-RT-09 | Planned checks (4.4) |
+| FR-HEAL-01 to FR-HEAL-03, FR-HEAL-05 to FR-HEAL-10 | heal unit tests (3), `run.sh heal` (4.2) |
+| FR-HEAL-04, FR-HEAL-11 | Planned checks (4.4); `gantry version` prints the features |
 | FR-CMP-01 to FR-CMP-08 | unit compose tests, planned label test |
 | FR-CMP-09, FR-CLI-11 | `built_images`, planned unit test (3.2), build checks (4.4) |
 | FR-CLI-01 to FR-CLI-10 | e2e, MT-08, planned checks |
@@ -307,7 +322,7 @@ candidates for new tests.
 A release candidate passes when:
 
 1. CI is green on the candidate revision (section 6 and unit tests).
-2. `run.sh docker podman kiri dhcp` passes on ENV-LAB, and the ipvlan run
+2. `run.sh docker kiri dhcp heal` passes on ENV-LAB, and the ipvlan run
    passes on a parent without macvlan links.
 3. The engine API checks in 4.4 pass.
 4. MT-01 to MT-08 pass on ENV-LAN, or each failure has a recorded waiver.

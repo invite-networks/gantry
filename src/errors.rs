@@ -23,7 +23,7 @@ pub enum Error {
         #[source]
         source: nix::Error,
     },
-    /// The container engine (docker, podman or kiri) returned an error.
+    /// The container engine (docker or kiri) returned an error.
     #[error("engine: {0}")]
     Engine(String),
     /// Namespace, link, address or route setup failed.

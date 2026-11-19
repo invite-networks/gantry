@@ -74,7 +74,7 @@ pub fn parse_bytes(s: &str) -> Result<u64, String> {
     Ok(bytes as u64)
 }
 
-/// Formats a duration the way docker and podman CLIs accept (`1500ms`).
+/// Formats a duration the way the docker CLI accepts (`1500ms`).
 pub fn cli_duration(d: Duration) -> String {
     let ms = d.as_millis();
     if ms % 1000 == 0 {

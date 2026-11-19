@@ -1,0 +1,24 @@
+# Self-healing scenario: three loopback-only services whose healthchecks
+# always fail. Only the ones that set health_on_failure are acted on.
+name: gtheal
+
+services:
+  sick:
+    image: busybox:1.37
+    network_mode: none
+    command: [sleep, "3600"]
+    stop_grace_period: 1s
+    health_on_failure: restart
+    healthcheck: { test: [CMD, "false"], interval: 2s, retries: 2 }
+  doomed:
+    image: busybox:1.37
+    network_mode: none
+    command: [sleep, "3600"]
+    stop_grace_period: 1s
+    health_on_failure: stop
+    healthcheck: { test: [CMD, "false"], interval: 2s, retries: 2 }
+  calm:
+    image: busybox:1.37
+    network_mode: none
+    command: [sleep, "3600"]
+    healthcheck: { test: [CMD, "false"], interval: 2s, retries: 2 }

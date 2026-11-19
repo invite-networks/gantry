@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.3.x |
+| Applies to | Gantry 0.1.x |
 | Validation | Planned, not yet executed. |
 
 ## Upgrade
@@ -31,7 +31,6 @@ kept for rollback; release notes read for format or state changes.
 
    ```sh
    sudo gantry setup docker
-   sudo gantry setup podman
    ```
 
 4. Validate each project without changing it, then apply:
@@ -49,6 +48,21 @@ recreates them once if the new version changes how containers are created
 Running DHCP agents are the old binary until their pod is recreated. To move
 them to the new version, run `gantry down` and `gantry up -d` in a
 maintenance window.
+
+## Moving from the 0.2 or 0.3 test releases
+
+Gantry was re-released as 0.1.0 before any production use, so apt sees
+0.1.0 as older than the earlier 0.2.x and 0.3.x test packages. Install it
+once with a downgrade, after which normal upgrades resume:
+
+```sh
+sudo apt update
+sudo apt install --allow-downgrades gantry=0.1.0
+gantry version                     # gantry 0.1.0, features: health_on_failure, supervise
+```
+
+Projects that set `runtime: podman` no longer load: move them to
+`docker` or `kiri` first.
 
 ## Rollback
 

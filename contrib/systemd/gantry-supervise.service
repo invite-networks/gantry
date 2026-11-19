@@ -1,0 +1,19 @@
+# Watches Docker and kiri for containers that turn unhealthy and act on
+# the ones whose service sets `health_on_failure: restart` or `stop`.
+# Engines only mark such containers; restart policies cover exits only.
+#
+# One watcher runs per host (it holds /run/gantry/heal.lock). gantry-agent
+# runs the same watcher itself; it takes over with
+# `systemctl disable --now gantry-supervise.service`.
+[Unit]
+Description=Gantry health watcher
+After=docker.service kiri.service gantry-boot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gantry supervise
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

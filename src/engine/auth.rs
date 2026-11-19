@@ -1,5 +1,5 @@
 //! Registry credentials for pulls. gantry reads the same auth files the
-//! engine CLIs write (`docker login`, `podman login`) and supports
+//! engine CLIs write (`docker login`) and supports
 //! credential helpers, so private images pull without extra setup.
 
 use crate::project::RuntimeKind;
@@ -58,26 +58,14 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/root"))
 }
 
-/// Auth files in the order the runtime's own CLI would read them.
-fn auth_files(kind: RuntimeKind) -> Vec<PathBuf> {
-    let docker = std::env::var_os("DOCKER_CONFIG")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".docker"))
-        .join("config.json");
-    match kind {
-        RuntimeKind::Podman => {
-            let mut v = Vec::new();
-            if let Some(f) = std::env::var_os("REGISTRY_AUTH_FILE") {
-                v.push(PathBuf::from(f));
-            }
-            let uid = nix::unistd::getuid().as_raw();
-            v.push(PathBuf::from(format!("/run/containers/{uid}/auth.json")));
-            v.push(home().join(".config/containers/auth.json"));
-            v.push(docker);
-            v
-        }
-        _ => vec![docker],
-    }
+/// The Docker CLI's auth file, which kiri also reads.
+fn auth_files(_kind: RuntimeKind) -> Vec<PathBuf> {
+    vec![
+        std::env::var_os("DOCKER_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".docker"))
+            .join("config.json"),
+    ]
 }
 
 /// Credentials for the registry `name` is pulled from, if any auth file

@@ -43,6 +43,20 @@ if [ "$1" = configure ]; then
 		systemctl enable gantry-boot.service >/dev/null 2>&1 || true
 	fi
 
+	# Health watcher. Enabled on first install; an existing disable (such
+	# as gantry-agent taking over) is kept across upgrades.
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		if deb-systemd-helper --quiet was-enabled gantry-supervise.service; then
+			deb-systemd-helper enable gantry-supervise.service >/dev/null 2>&1 || true
+		else
+			deb-systemd-helper update-state gantry-supervise.service >/dev/null 2>&1 || true
+		fi
+	fi
+	if [ -d /run/systemd/system ] &&
+		systemctl is-enabled --quiet gantry-supervise.service 2>/dev/null; then
+		systemctl restart gantry-supervise.service >/dev/null 2>&1 || true
+	fi
+
 	# Pick up /etc/ssh/sshd_config.d/gantry.conf.
 	if command -v sshd >/dev/null 2>&1; then
 		if sshd -t 2>/dev/null; then

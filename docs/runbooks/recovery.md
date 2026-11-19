@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.3.x with the Docker Engine API engine layer |
+| Applies to | Gantry 0.1.x with the Docker Engine API engine layer |
 | Validation | Section 1 matches behavior tested on the reference host with the earlier CLI engine. Sections 2 to 4 are planned, not yet executed. |
 
 Gantry keeps all pod state in tmpfs (`/run/gantry`, `/run/netns`) and
@@ -36,8 +36,7 @@ again with the same MAC and usually the same lease.
 
 Failure handling:
 
-* `engine` errors naming a socket: the engine is not up yet. Start it, or
-  for Podman make sure `podman.socket` is enabled, then rerun.
+* `engine` errors naming a socket: the engine is not up yet. Start it, then rerun.
 * A project failed at boot: `journalctl -u gantry-boot` names it and the
   error. The others are up. Fix the cause and run
   `sudo gantry --installed <name> up -d`.
@@ -80,7 +79,7 @@ and leftovers must be removed.
 
    ```sh
    P=<project>
-   for s in /var/run/docker.sock /run/podman/podman.sock /run/kiri/docker.sock; do
+   for s in /var/run/docker.sock /run/kiri/docker.sock; do
      [ -S "$s" ] || continue
      curl -s --unix-socket "$s" \
        "http://d/containers/json?all=true&filters=%7B%22label%22%3A%5B%22io.gantry.project%3D$P%22%5D%7D" \

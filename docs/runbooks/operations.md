@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Owner | Host operator (root) |
-| Applies to | Gantry 0.3.x with the Docker Engine API engine layer |
+| Applies to | Gantry 0.1.x with the Docker Engine API engine layer |
 | Validation | Commands match the CLI as built. Error texts for the API engine layer are planned, not yet executed. |
 
 All commands run as root from the project directory (or with `-f` and
@@ -77,7 +77,6 @@ Gantry uses each engine's API socket. Check them directly:
 
 ```sh
 curl -s --unix-socket /var/run/docker.sock http://d/_ping     # Docker
-curl -s --unix-socket /run/podman/podman.sock http://d/_ping  # Podman
 curl -s --unix-socket /run/kiri/docker.sock http://d/_ping    # kiri
 ```
 
@@ -139,7 +138,6 @@ which continues where it stopped.
 |---|---|---|
 | `gantry runs rootful; run it as root` | Not root. | Use `sudo`. |
 | `engine: ... /var/run/docker.sock ...` (connection refused or not found) | dockerd not running. | `systemctl start docker`. |
-| `engine: ... /run/podman/podman.sock ...` | Socket not answering, `podman.socket` could not be started, and the private service could not start. | `gantry setup podman`; check `systemctl status podman.socket`; check that `podman` is installed for the fallback. |
 | `engine: ... /run/kiri/docker.sock ...` | kiri not running, or listening elsewhere. | Start kiri; set `GANTRY_KIRI_HOST` if needed. |
 | Docker reports `unknown or invalid runtime name: gantry` | Shim not registered. | `gantry setup docker`. |
 | `gantry: pod network namespace ... does not exist; run gantry up again` (from Docker) | Docker restarted a container whose pod is gone (often after a reboot). | `gantry up -d`. |
@@ -147,8 +145,8 @@ which continues where it stopped.
 | kiri: `network ns:/run/netns/... not found` | Stock kiri without the patch. | Install the patched kiri (`contrib/kiri`). |
 | `config: ... driver bridge ...` | Only macvlan and ipvlan are supported. | Use a macvlan or ipvlan network with a parent. |
 | `config: ... needs an address` | Pod network has no static address and no `dhcp: true`. | Add one; Gantry does not allocate LAN addresses. |
-| Build fails with the `docker` or `podman` CLI not found | Builds use the engine CLI. | Install the CLI for that runtime, or build elsewhere and use `image:`. |
-| Pull fails with an authentication error | No credentials for the registry in the Docker or Podman auth files. | Log in as root (`docker login` or `podman login`), or configure a credential helper. |
+| Build fails with the `docker` CLI not found | Builds use the Docker CLI, for Docker and kiri. | Install the `docker` CLI, or build elsewhere and use `image:`. |
+| Pull fails with an authentication error | No credentials for the registry in the Docker auth file. | Log in as root (`docker login`), or configure a credential helper. |
 | `config: ... io.gantry. ...` | Reserved label in the file. | Rename the label. |
 | `network: ... File exists` or `Device or resource busy` on link creation | Parent already carries the other link type (macvlan vs ipvlan), or a duplicate MAC. | Use one link type per parent; check `mac_address` values. |
 | `firewall: ... has no address` | A deny rule names a pod with no address yet (DHCP not bound). | Wait for the lease and run `gantry firewall reload`, or use a CIDR. |
@@ -156,6 +154,10 @@ which continues where it stopped.
 | `timed out waiting for <svc>` | Dependency not healthy within the timeout. | Check `gantry logs <svc>`; raise the wait timeout. |
 | `image ... is not present and pull_policy is never` | Image missing. | `gantry pull` or change the policy. |
 | Pod has no address with `dhcp: true` | No lease yet. | See 2.3. |
+
+| `config: unknown runtime "podman"` | Podman support was removed in 0.1.0. | Use `runtime: docker` (or `kiri`) and `gantry up -d`. Old Podman containers are not seen by Gantry; remove them with `podman rm -f`. |
+| A service stays `unhealthy` and is not restarted | It does not set `health_on_failure`, the watcher is not running, or it gave up after 5 restarts in 30 minutes. | `journalctl -u gantry-supervise` shows each action and `gave up`. Fix the service; `gantry up -d --force-recreate SVC` starts it with a clean count. |
+| `another health watcher is running on this host` | `gantry supervise` was started while `gantry-supervise.service` or gantry-agent holds `/run/gantry/heal.lock`. | Expected; only one watcher runs per host. |
 
 ### 2.1a Projects that collide
 

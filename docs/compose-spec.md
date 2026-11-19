@@ -24,7 +24,7 @@ from the environment first, then from `.env` in the project directory (or
 | Key | Meaning |
 |---|---|
 | `name` | Project name. Default: `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. |
-| `runtime` | **Extension.** Default runtime for services: `docker` (default), `podman` or `kiri`. |
+| `runtime` | **Extension.** Default runtime for services: `docker` (default) or `kiri`. |
 | `pods` | **Extension.** The pods, each with its own network interfaces and firewall. |
 | `pod` | **Extension.** The project's only pod, without a name: it takes the project's name (and so its hostname). Use `pod` or `pods`, not both. |
 | `services` | Containers. Each runs in exactly one pod. |
@@ -73,7 +73,7 @@ pods:
     domainname: example.com     # optional
     share: [uts, ipc]           # default; net is always shared
     ipv6: true                  # false disables IPv6 in the pod
-    runtime: podman             # default runtime for services in this pod
+    runtime: kiri               # default runtime for services in this pod
     priority: 100               # boot order across the host; lower first
     dns: [1.1.1.1]              # default: the lease's servers, else the host's upstream servers
     dns_search: [example.com]
@@ -277,7 +277,7 @@ services:
 Supported keys: `image`, `pod`, `priority` (extension), `runtime` (extension), `container_name`,
 `command`, `entrypoint`, `environment`, `env_file`, `working_dir`, `user`,
 `labels`, `volumes` (bind, named, anonymous, tmpfs; short and long form),
-`tmpfs`, `restart`, `healthcheck`, `depends_on` (`service_started`,
+`tmpfs`, `restart`, `healthcheck`, `health_on_failure` (extension, below), `depends_on` (`service_started`,
 `service_healthy`, `service_completed_successfully`), `stop_signal`,
 `stop_grace_period`, `cap_add`, `cap_drop`, `privileged`, `read_only`,
 `devices`, `tty`, `stdin_open`, `init`, `mem_limit`, `cpus`, `pids_limit`,
@@ -288,6 +288,31 @@ Supported keys: `image`, `pod`, `priority` (extension), `runtime` (extension), `
 
 Ignored with a warning: `deploy`, `scale`, `links`, `external_links` and
 unknown keys.
+
+### health_on_failure
+
+**Extension.** What happens when the service's container turns
+`unhealthy`. Engines only mark it; `gantry supervise`
+(`gantry-supervise.service`) acts on it.
+
+| Value | Action |
+|---|---|
+| `none` | Default. Leave it running and unhealthy. |
+| `restart` | Restart it: the first time at once, then after 30 s, 60 s, 120 s, 240 s and 300 s. After 5 restarts in 30 minutes, give up until it is healthy again or recreated. |
+| `stop` | Stop it and leave it stopped. |
+
+The healthcheck can come from the service or from the image. Setting
+`restart` or `stop` with `healthcheck: { disable: true }` is an error.
+Only running containers are acted on, so `gantry stop` and `down` are never
+undone, and a project is skipped while a `gantry` command is working on it.
+
+```yaml
+services:
+  app:
+    image: example/app:1
+    healthcheck: { test: [CMD, /app/check], interval: 30s, retries: 3 }
+    health_on_failure: restart
+```
 
 ### build
 
@@ -312,11 +337,11 @@ services:
     #   shm_size: 256m
 ```
 
-A service with `build:` and no `image:` is tagged `<project>-<service>`
-(Podman stores it as `localhost/<project>-<service>`). The image is built
+A service with `build:` and no `image:` is tagged `<project>-<service>`.
+The image is built
 when it is missing, on `gantry build`, on `up --build`, or every time with
-`pull_policy: build`. Builds run through `docker build` (BuildKit) or
-`podman build`; kiri builds use the Docker CLI against kiri's socket with
+`pull_policy: build`. Builds run through `docker build` (BuildKit);
+kiri builds use the Docker CLI against kiri's socket with
 the classic builder. Remote (git or URL) contexts are not supported.
 
 Container names default to `<project>-<service>-1`.
@@ -328,7 +353,6 @@ Gantry drives every runtime through the Docker Engine API on its socket.
 | Runtime | Socket | How containers join the pod |
 |---|---|---|
 | `docker` | `/var/run/docker.sock` | Runtime `gantry` with network `none`, plus annotations that the `gantry-oci` shim turns into namespace paths before running runc. Run `gantry setup docker` once per host. |
-| `podman` | `/run/podman/podman.sock` (Docker-compatible API) | Network, UTS and IPC modes `ns:<path>`. Bare image names are qualified to `docker.io`. `gantry setup podman` enables the socket; Gantry starts it on demand otherwise. |
 | `kiri` | `/run/kiri/docker.sock` | Network, UTS and IPC modes `ns:<path>`. Needs the kiri patches in `contrib/kiri`. |
 
 Services in one pod may use different runtimes.

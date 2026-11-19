@@ -1,10 +1,10 @@
 //! The API create body for a service in its pod. This is where the
 //! runtimes differ: how a container joins the pod's namespaces.
 
-use super::{LABEL_HASH, LABEL_POD, LABEL_POD_ID, LABEL_PROJECT, LABEL_SERVICE};
+use super::{LABEL_HASH, LABEL_HEAL, LABEL_POD, LABEL_POD_ID, LABEL_PROJECT, LABEL_SERVICE};
 use crate::oci;
 use crate::pod::state::PodState;
-use crate::project::{MountKind, Project, RuntimeKind, Service};
+use crate::project::{HealthOnFailure, MountKind, Project, RuntimeKind, Service};
 use bollard::models::{
     ContainerCreateBody, DeviceMapping, HealthConfig, HostConfig, HostConfigLogConfig,
     ResourcesUlimits, RestartPolicy, RestartPolicyNameEnum,
@@ -13,32 +13,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Compose files name images the Docker way: a bare name means Docker
-/// Hub. Podman needs the registry spelled out unless short name aliases are
-/// configured, so qualify the name for it.
-pub fn qualify_image(kind: RuntimeKind, image: &str) -> String {
-    if kind != RuntimeKind::Podman || has_registry(image) {
-        return image.to_string();
-    }
-    if image.contains('/') {
-        format!("docker.io/{image}")
-    } else {
-        format!("docker.io/library/{image}")
-    }
-}
-
-fn has_registry(image: &str) -> bool {
-    let first = image.split('/').next().unwrap_or("");
-    image.contains('/') && (first.contains('.') || first.contains(':') || first == "localhost")
-}
-
-/// The image reference a service runs. Podman stores local builds of
-/// unqualified names under `localhost/`.
+/// The image reference a service runs.
 pub fn service_image(svc: &Service) -> String {
-    if svc.build.is_some() && svc.runtime == RuntimeKind::Podman && !has_registry(&svc.image) {
-        return format!("localhost/{}", svc.image);
-    }
-    qualify_image(svc.runtime, &svc.image)
+    svc.image.clone()
 }
 
 /// A stop grace period in whole seconds, rounded up so that 500ms does not
@@ -103,10 +80,7 @@ fn device(spec: &str) -> DeviceMapping {
 /// Whether this runtime joins the pod's UTS and IPC namespaces by path.
 /// kiri needs the second patch in `contrib/kiri` for this.
 pub fn joins_uts_ipc(kind: RuntimeKind) -> bool {
-    matches!(
-        kind,
-        RuntimeKind::Docker | RuntimeKind::Podman | RuntimeKind::Kiri
-    )
+    matches!(kind, RuntimeKind::Docker | RuntimeKind::Kiri)
 }
 
 /// Builds the create body for a service in its pod. The config hash label
@@ -128,6 +102,9 @@ pub fn create_spec(
     labels.insert(LABEL_SERVICE.into(), svc.name.clone());
     labels.insert(LABEL_POD.into(), svc.pod.clone());
     labels.insert(LABEL_POD_ID.into(), pod.id.clone());
+    if svc.health_on_failure != HealthOnFailure::None {
+        labels.insert(LABEL_HEAL.into(), svc.health_on_failure.as_str().into());
+    }
 
     let mut body = ContainerCreateBody {
         image: Some(service_image(svc)),
@@ -174,7 +151,7 @@ pub fn create_spec(
             }
             host.annotations = Some(ann);
         }
-        RuntimeKind::Podman | RuntimeKind::Kiri => {
+        RuntimeKind::Kiri => {
             host.network_mode = Some(format!("ns:{netns}"));
             match (&pod.uts, joins_uts_ipc(svc.runtime)) {
                 (Some(u), true) => host.uts_mode = Some(format!("ns:{}", u.display())),
@@ -245,10 +222,7 @@ pub fn create_spec(
                 timeout: h.timeout.map(nanos),
                 retries: h.retries.map(i64::from),
                 start_period: h.start_period.map(nanos),
-                start_interval: h
-                    .start_interval
-                    .filter(|_| svc.runtime != RuntimeKind::Podman)
-                    .map(nanos),
+                start_interval: h.start_interval.map(nanos),
             }
         });
     }
@@ -462,9 +436,9 @@ services:
     }
 
     #[test]
-    fn podman_and_kiri_spec() {
-        for rt in ["podman", "kiri"] {
-            let p = project(rt);
+    fn kiri_spec() {
+        {
+            let p = project("kiri");
             let b = create_spec(&p, &p.services["app"], &state(true), None);
             let h = b.host_config.as_ref().unwrap();
             assert_eq!(h.network_mode.as_deref(), Some("ns:/run/netns/gt-demo-web"));
@@ -479,7 +453,7 @@ services:
             assert!(b.hostname.is_none());
         }
         // Without a shared UTS namespace the hostname is set directly.
-        let p = project("podman");
+        let p = project("kiri");
         let b = create_spec(&p, &p.services["app"], &state(false), None);
         assert_eq!(b.hostname.as_deref(), Some("web"));
         let binds = b.host_config.unwrap().binds.unwrap();
@@ -488,8 +462,6 @@ services:
 
     #[test]
     fn built_images() {
-        let p = project("podman");
-        assert_eq!(service_image(&p.services["built"]), "localhost/demo-built");
         let p = project("docker");
         assert_eq!(service_image(&p.services["built"]), "demo-built");
         assert!(
@@ -512,27 +484,6 @@ services:
         assert_eq!(d.cgroup_permissions.as_deref(), Some("r"));
         let d = device("/dev/fuse");
         assert_eq!(d.path_in_container.as_deref(), Some("/dev/fuse"));
-    }
-
-    #[test]
-    fn podman_images_are_qualified() {
-        assert_eq!(
-            qualify_image(RuntimeKind::Podman, "redis:7"),
-            "docker.io/library/redis:7"
-        );
-        assert_eq!(
-            qualify_image(RuntimeKind::Podman, "bitnami/redis"),
-            "docker.io/bitnami/redis"
-        );
-        assert_eq!(
-            qualify_image(RuntimeKind::Podman, "ghcr.io/a/b:1"),
-            "ghcr.io/a/b:1"
-        );
-        assert_eq!(
-            qualify_image(RuntimeKind::Podman, "localhost/x"),
-            "localhost/x"
-        );
-        assert_eq!(qualify_image(RuntimeKind::Docker, "redis:7"), "redis:7");
     }
 
     #[test]
