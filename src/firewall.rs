@@ -34,9 +34,15 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
     if fw.defaults {
         input.push(default_rule(
             Action::Accept,
-            vec![Proto::Icmp, Proto::Icmpv6],
+            vec![Proto::Icmp],
             vec![],
-            "default: any ICMP",
+            "default: ICMP",
+        ));
+        input.push(default_rule(
+            Action::Accept,
+            vec![Proto::Icmpv6],
+            vec![],
+            "default: ICMPv6",
         ));
     }
     input.extend(fw.input.iter().cloned());
@@ -94,19 +100,32 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
         "    type filter hook input priority filter; policy {};",
         policy(fw.input_policy)
     );
-    let _ = writeln!(w, "    iif \"lo\" accept comment \"intra-pod traffic\"");
-    let _ = writeln!(w, "    ct state established,related accept");
-    let _ = writeln!(w, "    ct state invalid drop");
     let _ = writeln!(
         w,
-        "    icmpv6 type {{ destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} accept"
+        "    iif \"lo\" counter accept comment \"intra-pod traffic\""
     );
     let _ = writeln!(
         w,
-        "    icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} accept"
+        "    ct state established,related counter accept comment \"established\""
     );
+    let _ = writeln!(w, "    ct state invalid counter drop comment \"invalid\"");
+    // With the defaults off and a closed policy, keep the ICMP that path
+    // MTU discovery, error reporting and neighbor discovery need.
+    if !fw.defaults && fw.input_policy != Action::Accept {
+        let _ = writeln!(
+            w,
+            "    icmp type {{ destination-unreachable, time-exceeded, parameter-problem }} counter accept comment \"ICMP errors\""
+        );
+        let _ = writeln!(
+            w,
+            "    icmpv6 type {{ destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} counter accept comment \"ICMPv6 errors and neighbor discovery\""
+        );
+    }
     if dhcp {
-        let _ = writeln!(w, "    udp sport 67 udp dport 68 accept comment \"dhcp\"");
+        let _ = writeln!(
+            w,
+            "    udp sport 67 udp dport 68 counter accept comment \"dhcp\""
+        );
     }
     for (i, r) in input.iter().enumerate() {
         for line in rule_lines(project, pod, r, true, book)
@@ -122,9 +141,7 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
             log_prefix(pod, "in")
         );
     }
-    if fw.input_policy == Action::Reject {
-        let _ = writeln!(w, "    reject with icmpx admin-prohibited");
-    }
+    policy_counter(w, fw.input_policy);
     let _ = writeln!(w, "  }}");
 
     let _ = writeln!(w, "  chain output {{");
@@ -133,14 +150,25 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
         "    type filter hook output priority filter; policy {};",
         policy(fw.output_policy)
     );
-    let _ = writeln!(w, "    oif \"lo\" accept comment \"intra-pod traffic\"");
-    let _ = writeln!(w, "    ct state established,related accept");
     let _ = writeln!(
         w,
-        "    icmpv6 type {{ nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert, packet-too-big, destination-unreachable, time-exceeded, parameter-problem }} accept"
+        "    oif \"lo\" counter accept comment \"intra-pod traffic\""
     );
+    let _ = writeln!(
+        w,
+        "    ct state established,related counter accept comment \"established\""
+    );
+    if fw.output_policy != Action::Accept {
+        let _ = writeln!(
+            w,
+            "    icmpv6 type {{ nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert, packet-too-big, destination-unreachable, time-exceeded, parameter-problem }} counter accept comment \"ICMPv6 errors and neighbor discovery\""
+        );
+    }
     if dhcp {
-        let _ = writeln!(w, "    udp sport 68 udp dport 67 accept comment \"dhcp\"");
+        let _ = writeln!(
+            w,
+            "    udp sport 68 udp dport 67 counter accept comment \"dhcp\""
+        );
     }
     for (i, r) in output.iter_mut().enumerate() {
         for line in rule_lines(project, pod, r, false, book)
@@ -156,12 +184,22 @@ pub fn render(project: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Op
             log_prefix(pod, "out")
         );
     }
-    if fw.output_policy == Action::Reject {
-        let _ = writeln!(w, "    reject with icmpx admin-prohibited");
-    }
+    policy_counter(w, fw.output_policy);
     let _ = writeln!(w, "  }}");
     let _ = writeln!(w, "}}");
     Ok(Some(out))
+}
+
+/// Last rule of a chain: counts what falls through to the policy, and does
+/// the reject when the policy is reject.
+fn policy_counter(w: &mut String, a: Action) {
+    let _ = match a {
+        Action::Reject => writeln!(
+            w,
+            "    counter reject with icmpx admin-prohibited comment \"policy reject\""
+        ),
+        a => writeln!(w, "    counter comment \"policy {}\"", a.as_nft()),
+    };
 }
 
 /// The base chains take `drop` for both drop and reject; reject is done by
@@ -355,6 +393,7 @@ fn rule_lines(
                 log_prefix(pod, if input { "in" } else { "out" }).replace(" drop", "")
             ));
         }
+        parts.push("counter".into());
         parts.push(match r.action {
             Action::Reject => "reject with icmpx admin-prohibited".into(),
             a => a.as_nft().into(),
@@ -405,6 +444,132 @@ fn set(items: impl Iterator<Item = String>) -> String {
     }
 }
 
+/// One chain of a loaded pod firewall, as `nft list table` prints it.
+#[derive(Debug, Default, PartialEq)]
+pub struct ChainView {
+    pub name: String,
+    pub policy: String,
+    pub rules: Vec<RuleView>,
+}
+
+/// One rule with its counter (None when the rule has no counter).
+#[derive(Debug, Default, PartialEq)]
+pub struct RuleView {
+    pub packets: Option<u64>,
+    pub bytes: Option<u64>,
+    pub rule: String,
+    pub comment: Option<String>,
+}
+
+/// Reads the output of `nft list table inet gantry`.
+pub fn parse_listing(listing: &str) -> Vec<ChainView> {
+    let mut chains: Vec<ChainView> = Vec::new();
+    for line in listing.lines().map(str::trim) {
+        if let Some(name) = line.strip_prefix("chain ") {
+            chains.push(ChainView {
+                name: name.trim_end_matches(" {").trim().into(),
+                ..Default::default()
+            });
+            continue;
+        }
+        let Some(chain) = chains.last_mut() else {
+            continue;
+        };
+        if line.is_empty() || line == "}" || line.starts_with("table ") {
+            continue;
+        }
+        if line.starts_with("type ") {
+            if let Some(p) = line.split("policy ").nth(1) {
+                chain.policy = p.trim_end_matches(';').trim().into();
+            }
+            continue;
+        }
+        chain.rules.push(parse_rule(line));
+    }
+    chains
+}
+
+fn parse_rule(line: &str) -> RuleView {
+    let mut rule = line.to_string();
+    let mut comment = None;
+    if let Some(i) = rule
+        .find(" comment \"")
+        .or_else(|| rule.starts_with("comment \"").then_some(0))
+    {
+        let c = rule[i..].trim_start().trim_start_matches("comment ");
+        comment = Some(c.trim_matches('"').to_string());
+        rule.truncate(i);
+    }
+    let (mut packets, mut bytes) = (None, None);
+    if let Some(i) = rule.find("counter packets ") {
+        let words: Vec<&str> = rule[i..].split_whitespace().collect();
+        packets = words.get(2).and_then(|w| w.parse().ok());
+        bytes = words.get(4).and_then(|w| w.parse().ok());
+        let end = i + words.iter().take(5).map(|w| w.len() + 1).sum::<usize>();
+        rule = format!("{}{}", &rule[..i], rule.get(end..).unwrap_or(""));
+    }
+    let rule = rule.split_whitespace().collect::<Vec<_>>().join(" ");
+    RuleView {
+        packets,
+        bytes,
+        rule,
+        comment,
+    }
+}
+
+/// The operational view of one pod's chains: hit counts, rule, comment.
+pub fn format_chains(chains: &[ChainView]) -> String {
+    let mut out = String::new();
+    let width = chains
+        .iter()
+        .flat_map(|c| &c.rules)
+        .map(|r| r.rule.len())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, 72);
+    for c in chains {
+        let _ = writeln!(out, "  {} (policy {})", c.name, c.policy);
+        let _ = writeln!(
+            out,
+            "    {:>10}  {:>8}  {:<width$}  COMMENT",
+            "PACKETS", "BYTES", "RULE"
+        );
+        for r in &c.rules {
+            let n = |v: Option<u64>, f: fn(u64) -> String| v.map_or("-".to_string(), f);
+            let (rule, comment) = if r.rule.is_empty() {
+                (r.comment.clone().unwrap_or_default(), String::new())
+            } else {
+                (r.rule.clone(), r.comment.clone().unwrap_or_default())
+            };
+            let line = format!(
+                "    {:>10}  {:>8}  {:<width$}  {comment}",
+                n(r.packets, |v| v.to_string()),
+                n(r.bytes, human_bytes),
+                rule
+            );
+            let _ = writeln!(out, "{}", line.trim_end());
+        }
+    }
+    out
+}
+
+fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 5] = ["K", "M", "G", "T", "P"];
+    if b < 1024 {
+        return b.to_string();
+    }
+    let mut v = b as f64;
+    let mut unit = "";
+    for u in UNITS {
+        if v < 1024.0 {
+            break;
+        }
+        v /= 1024.0;
+        unit = u;
+    }
+    format!("{v:.1}{unit}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +614,11 @@ services:
         }
     }
 
+    /// The ruleset without counters, so assertions read like the rules.
+    fn rendered(p: &Project, pod: &Pod, book: &dyn AddressBook) -> Result<Option<String>> {
+        render(p, pod, book).map(|r| r.map(|s| s.replace(" counter", "")))
+    }
+
     fn pos(rs: &str, needle: &str) -> usize {
         rs.find(needle)
             .unwrap_or_else(|| panic!("{needle:?} not in {rs}"))
@@ -457,7 +627,7 @@ services:
     #[test]
     fn renders_rules() {
         let p = project(BASE);
-        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        let rs = rendered(&p, &p.pods["web"], &book).unwrap().unwrap();
         assert!(rs.contains("policy drop;"), "{rs}");
         assert!(rs.contains("iif \"lo\" accept"));
         assert!(rs.contains("tcp dport { 80, 443 } accept"));
@@ -485,10 +655,11 @@ services:
     #[test]
     fn defaults_wrap_the_pods_rules() {
         let p = project(BASE);
-        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
-        let icmp = pos(
+        let rs = rendered(&p, &p.pods["web"], &book).unwrap().unwrap();
+        let icmp = pos(&rs, "meta l4proto icmp accept comment \"default: ICMP\"");
+        let icmp6 = pos(
             &rs,
-            "meta l4proto { icmp, ipv6-icmp } accept comment \"default: any ICMP\"",
+            "meta l4proto ipv6-icmp accept comment \"default: ICMPv6\"",
         );
         let own = pos(&rs, "tcp dport { 80, 443 } accept");
         let ports = pos(&rs, "ports of service nginx");
@@ -496,18 +667,24 @@ services:
             &rs,
             "ip saddr 192.0.2.0/24 reject with icmpx admin-prohibited comment \"default: reject local subnet\"",
         );
-        assert!(icmp < own && own < ports && ports < reject, "{rs}");
+        assert!(
+            icmp < icmp6 && icmp6 < own && own < ports && ports < reject,
+            "{rs}"
+        );
     }
 
     #[test]
     fn pod_without_firewall_section_gets_the_default_policy() {
         let p = project(BASE);
-        let rs = render(&p, &p.pods["db"], &book).unwrap().unwrap();
+        let rs = rendered(&p, &p.pods["db"], &book).unwrap().unwrap();
         assert!(
             rs.contains("type filter hook input priority filter; policy accept;"),
             "{rs}"
         );
-        assert!(rs.contains("comment \"default: any ICMP\""), "{rs}");
+        assert!(rs.contains("comment \"default: ICMP\""), "{rs}");
+        // Any ICMP is accepted, so the per-type lines are not needed.
+        assert!(!rs.contains("icmp type"), "{rs}");
+        assert!(!rs.contains("icmpv6 type"), "{rs}");
         // The subnet comes from the DHCP lease.
         assert!(
             rs.contains("ip saddr 192.0.2.0/24 reject with icmpx admin-prohibited comment \"default: reject local subnet\""),
@@ -522,8 +699,11 @@ services:
             "      log_dropped: true\n      defaults: false",
         );
         let p = project(&yaml);
-        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        let rs = rendered(&p, &p.pods["web"], &book).unwrap().unwrap();
         assert!(!rs.contains("default:"), "{rs}");
+        // A closed pod still passes ICMP errors and neighbor discovery.
+        assert!(rs.contains("icmp type { destination-unreachable"), "{rs}");
+        assert!(rs.contains("icmpv6 type { destination-unreachable"), "{rs}");
     }
 
     #[test]
@@ -536,7 +716,7 @@ services:
                 vec![]
             }
         };
-        let rs = render(&p, &p.pods["db"], &book).unwrap().unwrap();
+        let rs = rendered(&p, &p.pods["db"], &book).unwrap().unwrap();
         assert!(rs.contains("udp sport 67 udp dport 68 accept"), "{rs}");
         assert!(
             rs.contains(
@@ -567,11 +747,71 @@ services:
     fn unknown_peer_addresses_are_skipped() {
         let p = project(BASE);
         let book = |_: &str| -> Vec<IpNet> { vec![] };
-        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        let rs = rendered(&p, &p.pods["web"], &book).unwrap().unwrap();
         // The db pod's address is unknown, so only the IPv6 peer remains.
         assert!(!rs.contains("192.0.2.50"));
         assert!(rs.contains("ip6 saddr 2001:db8::/32 tcp dport 9000 accept"));
         // The web pod's subnet comes from its static address.
         assert!(rs.contains("ip saddr 192.0.2.0/24 reject"), "{rs}");
+    }
+
+    #[test]
+    fn every_rule_counts_and_the_policy_is_counted_last() {
+        let p = project(BASE);
+        let rs = render(&p, &p.pods["web"], &book).unwrap().unwrap();
+        assert!(rs.contains("tcp dport { 80, 443 } counter accept"), "{rs}");
+        assert!(
+            rs.contains("meta l4proto icmp counter accept comment \"default: ICMP\""),
+            "{rs}"
+        );
+        let input = &rs[pos(&rs, "chain input")..pos(&rs, "chain output")];
+        let last = input
+            .lines()
+            .map(str::trim)
+            .take_while(|l| *l != "}")
+            .last()
+            .unwrap();
+        assert_eq!(last, "counter comment \"policy drop\"", "{rs}");
+    }
+
+    #[test]
+    fn reads_a_loaded_table() {
+        let listing = r#"table inet gantry {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" counter packets 12 bytes 3400 accept comment "intra-pod traffic"
+		meta l4proto icmp counter packets 3 bytes 252 accept comment "default: ICMP"
+		tcp dport { 80, 443 } counter packets 2048 bytes 5242880 accept
+		limit rate 10/second log prefix "gantry web in drop: "
+		counter packets 7 bytes 420 comment "policy drop"
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+		counter packets 0 bytes 0 comment "policy accept"
+	}
+}
+"#;
+        let chains = parse_listing(listing);
+        assert_eq!(chains.len(), 2);
+        assert_eq!(chains[0].policy, "drop");
+        assert_eq!(
+            chains[0].rules[2],
+            RuleView {
+                packets: Some(2048),
+                bytes: Some(5242880),
+                rule: "tcp dport { 80, 443 } accept".into(),
+                comment: None,
+            }
+        );
+        assert_eq!(chains[0].rules[3].packets, None);
+        assert_eq!(chains[0].rules[4].rule, "");
+        assert_eq!(chains[0].rules[4].comment.as_deref(), Some("policy drop"));
+        let view = format_chains(&chains);
+        assert!(
+            view.contains("5.0M  tcp dport { 80, 443 } accept"),
+            "{view}"
+        );
+        assert!(view.contains("420  policy drop"), "{view}");
+        assert!(view.contains("3.3K  iif \"lo\" accept"), "{view}");
     }
 }

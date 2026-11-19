@@ -293,8 +293,14 @@ enum PodCmd {
 
 #[derive(Subcommand)]
 enum FwCmd {
-    /// Print the generated ruleset and what is loaded in the pod
-    Show { pod: String },
+    /// Show each pod's loaded rules with hit counts (all pods by default)
+    Show {
+        /// Only this pod
+        pod: Option<String>,
+        /// Print the generated ruleset and the full nft listing instead
+        #[arg(long)]
+        raw: bool,
+    },
     /// Re-render and apply every pod's firewall and hosts file
     Reload,
 }
@@ -872,21 +878,50 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 status.code().unwrap_or(1).clamp(0, 255) as u8
             ))
         }
-        Cmd::Firewall(FwCmd::Show { pod }) => {
+        Cmd::Firewall(FwCmd::Show { pod, raw }) => {
             require_root()?;
             let o = load_project(&g)?;
-            let st = state::PodState::load(&o.project.name, &pod)?
-                .ok_or_else(|| Error::State(format!("pod {pod} is not up")))?;
-            let path = state::pod_dir(&o.project.name, &pod).join("firewall.nft");
-            match std::fs::read_to_string(&path) {
-                Ok(t) => println!("# {}\n{t}", path.display()),
-                Err(_) => println!("# pod {pod} has no firewall section; all traffic is allowed"),
+            let project = &o.project;
+            let pods: Vec<String> = match pod {
+                Some(p) if project.pods.contains_key(&p) => vec![p],
+                Some(p) => {
+                    return Err(Error::config(format!(
+                        "project {} has no pod {p}",
+                        project.name
+                    )));
+                }
+                None => project.pods.keys().cloned().collect(),
+            };
+            for (i, pod) in pods.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                let Some(st) = state::PodState::load(&project.name, pod)? else {
+                    println!("pod {pod}: not up");
+                    continue;
+                };
+                if raw {
+                    let path = state::pod_dir(&project.name, pod).join("firewall.nft");
+                    match std::fs::read_to_string(&path) {
+                        Ok(t) => println!("# {}\n{t}", path.display()),
+                        Err(_) => println!("# pod {pod} has no generated firewall"),
+                    }
+                    let out = pod::nft_output(&st.netns, &["list", "ruleset"])?;
+                    println!(
+                        "# loaded in the pod namespace:\n{}",
+                        String::from_utf8_lossy(&out.stdout)
+                    );
+                    continue;
+                }
+                let out = pod::nft_output(&st.netns, &["list", "table", "inet", "gantry"])?;
+                if !out.status.success() {
+                    println!("pod {pod}: no firewall loaded; all traffic is allowed");
+                    continue;
+                }
+                let chains = gantry::firewall::parse_listing(&String::from_utf8_lossy(&out.stdout));
+                println!("pod {pod}");
+                print!("{}", gantry::firewall::format_chains(&chains));
             }
-            let out = pod::nft_output(&st.netns, &["list", "ruleset"])?;
-            println!(
-                "# loaded in the pod namespace:\n{}",
-                String::from_utf8_lossy(&out.stdout)
-            );
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Firewall(FwCmd::Reload) => {

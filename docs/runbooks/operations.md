@@ -47,7 +47,8 @@ ip -n gt-<project>-web neigh
 ### Firewall
 
 ```sh
-gantry firewall show web            # generated ruleset and what is loaded
+gantry firewall show                # every pod: loaded rules with hit counts
+gantry firewall show web --raw      # one pod: generated ruleset and nft listing
 gantry pod exec web nft list ruleset
 gantry firewall reload              # re-render every pod's firewall and hosts file
 ```
@@ -168,7 +169,8 @@ which continues where it stopped.
 1. Confirm the address: `gantry pod exec <pod> ip addr`.
 2. Confirm the route: `gantry pod exec <pod> ip route` shows
    `default via <gateway>`.
-3. Check the firewall: `gantry firewall show <pod>`. Without
+3. Check the firewall: `gantry firewall show <pod>`. A rising count on
+   a reject rule or the policy row shows what is being turned away. Without
    `firewall:` the pod is open; with it, input is dropped unless a rule,
    `ports:` or `expose:` opens the port.
 4. Test from another machine, not the host. **The host cannot reach its own
@@ -229,7 +231,7 @@ uname -r
 gantry config --json > config.json
 gantry ps; gantry pod ls
 gantry pod inspect <pod>
-gantry firewall show <pod>
+gantry firewall show <pod> --raw
 GANTRY_LOG=debug gantry up -d 2> up-debug.log
 ls -lR /run/gantry/<project>
 ```

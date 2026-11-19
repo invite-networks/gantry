@@ -47,13 +47,17 @@ out=$($S demo config --services 2>&1) && [ "$out" = nginx ] && ok "config --serv
 out=$($S gantry demo config --pods 2>&1) && [ "$out" = web ] && ok "gantry prefix: $out" || bad "prefix: $out"
 out=$($S version 2>&1); echo "$out" | grep -q '^gantry' && ok "version" || bad "version: $out"
 out=$($S ls 2>&1); [ $? -eq 0 ] && ok "ls" || bad "ls: $out"
+for c in "demo firewall show" "demo fw show web" "demo firewall show --raw" "demo firewall show web --raw"; do
+	out=$($S "$c" 2>&1) && [ "$out" = "pod web: not up" ] && ok "$c" || bad "$c: $out"
+done
 
 # Each of these must be refused.
 for c in "demo exec nginx sh" "demo run nginx sh" "demo down -v" "demo pod exec web sh" \
 	"demo firewall reload" "demo kill" "demo up --pull sometimes" "demo logs --tail x" \
 	"../etc config" "demo -f /tmp/x.yaml up" "nope config" "demo config --services --json; id" \
 	'demo config $(id)' "demo up -f x" "demo up --project-directory=/tmp" "demo logs -- -f" \
-	"demo pod inspect ../x" "demo stop -t 1x" "setup docker"; do
+	"demo pod inspect ../x" "demo stop -t 1x" "demo firewall show web --bogus" \
+	"demo firewall show --raw web" "setup docker"; do
 	out=$($S "$c" 2>&1) && bad "allowed: $c -> $out" || ok "refused: $c -> $(echo "$out" | tail -1)"
 done
 $S -t demo config --services 2>&1 | grep -q nginx && ok "tty request still runs" || bad "tty"

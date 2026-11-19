@@ -143,7 +143,7 @@ stay alive until they exit.
 
 `firewall::render` turns a pod's `firewall:` section (or an empty one when
 the pod has none), plus service `ports:` and `expose:` [FR-FW-06], into one
-ruleset. Input rules are ordered: the default any-ICMP accept, the pod's own
+ruleset. Input rules are ordered: the default ICMP and ICMPv6 accepts, the pod's own
 rules, `ports:` and `expose:`, then the default reject from `subnet`
 [FR-FW-03]:
 
@@ -154,8 +154,12 @@ table inet gantry {          # replaced atomically with nft -f
 }
 ```
 
-The fixed preamble allows loopback, established and related, IPv6 neighbor
-discovery, essential ICMP errors and DHCP replies on DHCP pods [FR-FW-04]. Peers are resolved through an address book built
+The fixed preamble allows loopback, established and related, and DHCP
+replies on DHCP pods. When a chain's policy is closed and the defaults do not
+already accept all ICMP, it also allows ICMP errors and IPv6 neighbor
+discovery [FR-FW-04]. Every rule carries a counter, and each chain ends with
+a counter-only rule for its policy; `firewall show` parses `nft list table`
+into a hit-count table [FR-FW-09]. Peers are resolved through an address book built
 from saved pod state and leases. An unknown peer is skipped for accept rules
 and is an error for deny rules [FR-FW-07]. `subnet` resolves to the subnets
 of the pod's static addresses and current leases. On a DHCP pod without a

@@ -171,13 +171,20 @@ firewall:
 With `defaults: true`, which is the default, the input chain is:
 
 1. Always allowed: loopback (intra-pod traffic), established and related
-   connections, IPv6 neighbor discovery, essential ICMP errors, and DHCP
-   replies on DHCP pods.
-2. Any ICMP and ICMPv6, accepted.
+   connections, and DHCP replies on DHCP pods. Invalid packets are dropped.
+2. ICMP, accepted, then ICMPv6, accepted.
 3. The pod's own `input` rules, then the ports opened by `ports:` and
    `expose:`.
 4. Everything from the pod's own subnet (`subnet`), rejected.
 5. The input policy, `accept` unless set.
+
+With `defaults: false` and an input policy of drop or reject, Gantry keeps
+an accept for ICMP errors and ICMPv6 neighbor discovery in their place, so
+path MTU discovery and IPv6 still work.
+
+Every rule has a counter, and the last rule of each chain counts what falls
+through to the policy. `gantry firewall show` prints them. Counters restart
+from zero when the firewall is reloaded or the pod is recreated.
 
 A pod with no `firewall` section gets exactly this. Neighbors on the same
 VLAN cannot reach the pod, since that traffic never crosses a router and

@@ -79,7 +79,7 @@ ssh gantry@host myproject restart web
 ssh gantry@host myproject pull
 ssh gantry@host myproject down
 ssh gantry@host myproject pod ls
-ssh gantry@host myproject firewall show web
+ssh gantry@host myproject firewall show            # every pod, with hit counts
 ssh gantry@host gantry myproject ps              # a leading "gantry" is ignored
 ```
 
@@ -93,7 +93,7 @@ ssh gantry@host gantry myproject ps              # a leading "gantry" is ignored
 | `logs` | `-f`, `-t`, `--tail N\|all`, services |
 | `start`, `pull`, `build`, `top` | services |
 | `stop`, `restart` | `-t N`, services |
-| `pod ls`, `pod inspect POD`, `firewall show POD` | as shown |
+| `pod ls`, `pod inspect POD`, `firewall show [POD] [--raw]` | as shown |
 
 Not available remotely, because each one either destroys data or runs
 arbitrary commands as root: `down -v`, `exec`, `run`, `kill`, `rm`,

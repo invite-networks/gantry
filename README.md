@@ -147,7 +147,7 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 | `data move [--dry-run] [--passes N] [--no-xattrs] [--force] [svc...]` | Move data to the paths the project file now names: live rsync passes, a short stop for the final pass and a checksum check, then the services are recreated on the new path. The old data is kept. |
 | `ls` | Projects with pods on this host. |
 | `pod ls`, `pod inspect POD`, `pod exec POD cmd...` | Pods, their addresses, state and DHCP leases; run a host command (`ip`, `tcpdump`, `nft`) in a pod's network namespace. |
-| `firewall show POD`, `firewall reload` | The generated ruleset and what is loaded; re-render hosts files and firewalls. |
+| `firewall show [POD] [--raw]`, `firewall reload` | Every pod's loaded rules with hit counts (`--raw`: the generated ruleset and the nft listing); re-render hosts files and firewalls. |
 | `setup docker`, `setup podman` | One time host setup per engine. |
 | `version`, `completion SHELL` | Versions of Gantry and each engine; shell completions. |
 

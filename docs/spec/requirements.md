@@ -125,13 +125,13 @@ Priority: **M** must, **S** should, **C** could.
 |---|---|---|
 | FR-FW-01 | Every pod with a network shall get one `inet gantry` nftables table inside its network namespace, replaced atomically on each apply. | M |
 | FR-FW-02 | Gantry shall never add, change or remove rules in the host's network namespace. | M |
-| FR-FW-03 | Input and output policies shall default to accept. Unless `defaults: false`, Gantry shall add an accept for any ICMP before the pod's rules and a reject from the pod's own subnets (`subnet`) after its rules and ports, whether or not the pod has a `firewall:` section. | M |
+| FR-FW-03 | Input and output policies shall default to accept. Unless `defaults: false`, Gantry shall add an accept for ICMP and one for ICMPv6 before the pod's rules and a reject from the pod's own subnets (`subnet`) after its rules and ports, whether or not the pod has a `firewall:` section. | M |
 | FR-FW-04 | Loopback, established and related traffic, IPv6 neighbor discovery, essential ICMP errors and DHCP replies (on DHCP pods) shall always be allowed. | M |
 | FR-FW-05 | Rules shall match protocol, ports and port ranges, interface, and peers given as CIDR, host, `pod:`, `service:`, `subnet` (the pod's own subnets, static or leased) or `any`, with actions accept, drop or reject, optional rate limit, logging and comment. | M |
 | FR-FW-06 | Service `ports:` shall open the container port to everyone. A host mapping such as `8080:80` opens the container port and warns. `expose:` shall open the port to the project's other pods only. | M |
 | FR-FW-07 | A deny rule whose peer pod has no known address shall fail with an error rather than be skipped. | M |
 | FR-FW-08 | Rule fields that reach the ruleset (comments, limits, interface names) shall be validated so they cannot inject nftables syntax. | M |
-| FR-FW-09 | `firewall show` shall print the generated ruleset and what is loaded. `firewall reload` shall re-render and apply every pod's firewall and hosts file. | M |
+| FR-FW-09 | `firewall show` shall print every pod's loaded rules with hit counts, or one pod's when named, and with `--raw` the generated ruleset and what is loaded. Every rule and each chain's policy shall be counted. `firewall reload` shall re-render and apply every pod's firewall and hosts file. | M |
 
 ### 5.6 Runtimes and engines
 
