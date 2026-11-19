@@ -63,7 +63,7 @@ Run with `cargo test --all-targets`.
 | `fnv_known_values` | `src/util.rs` | FR-CLI-02 |
 | `pod_network_defaults` (`health_on_failure` values, bad value, disabled healthcheck) | `src/compose/normalize.rs` | FR-HEAL-01 |
 | `backoff_doubles_to_the_cap` | `src/heal.rs` | FR-HEAL-05 |
-| `control_pauses_per_project` | `src/heal.rs` | FR-HEAL-08 |
+| `control_pauses_per_project`, `pause_waits_for_an_action_in_progress` | `src/heal.rs` | FR-HEAL-08 |
 | `actions_serialize_snake_case` | `src/heal.rs` | FR-HEAL-09 |
 
 ### 3.1 Unit tests changed by the engine move

@@ -240,7 +240,10 @@ gap for services that opt in.
   [FR-HEAL-07].
 * **Library first.** `heal::watch(runtimes, policy, control, actions,
   cancel)` takes a `tokio_util` `CancellationToken`, a `Control` for
-  per-project pause and resume, and an optional `mpsc::Sender<HealAction>`
+  per-project pause and resume (`pause` is async: the watcher holds a guard
+  from its final pause check, made after the project lock, through the
+  restart or stop, and `pause` waits on that guard, so it returns only when
+  no action is in progress), and an optional `mpsc::Sender<HealAction>`
   fed with `try_send` [FR-HEAL-08]. Cancellation is checked between
   actions, so the future resolves after any restart in progress.
   `gantry supervise` and `gantry-supervise.service` run it for Docker and

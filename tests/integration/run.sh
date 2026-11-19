@@ -149,6 +149,12 @@ ipv6() {
 }
 
 heal() {
+  # The packaged watcher would hold the host lock; pause it for the test.
+  unit_was_active=
+  if systemctl is-active --quiet gantry-supervise.service 2>/dev/null; then
+    unit_was_active=1
+    systemctl stop gantry-supervise.service
+  fi
   for rt in ${GT_HEAL_RUNTIMES:-docker kiri}; do
     echo "== heal on $rt"
     export GANTRY_RUNTIME=$rt
@@ -172,6 +178,7 @@ heal() {
     $K down >/dev/null 2>&1
   done
   unset GANTRY_RUNTIME
+  [ -n "$unit_was_active" ] && systemctl start gantry-supervise.service
 }
 
 targets=${*:-docker dhcp heal}

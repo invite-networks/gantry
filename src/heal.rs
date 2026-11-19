@@ -119,13 +119,20 @@ pub struct HealAction {
 #[derive(Debug, Clone, Default)]
 pub struct Control {
     paused: Arc<Mutex<HashSet<String>>>,
+    /// Held by the watcher from its last pause check through the restart
+    /// or stop it makes, so `pause` can wait for that action to finish.
+    acting: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Control {
-    pub fn pause(&self, project: &str) {
+    /// Pauses the project. When this returns, no action on the project is
+    /// in progress and none will start until `resume`: it waits for an
+    /// action already under way (at most one restart or stop) to finish.
+    pub async fn pause(&self, project: &str) {
         if let Ok(mut p) = self.paused.lock() {
             p.insert(project.to_string());
         }
+        drop(self.acting.lock().await);
     }
     pub fn resume(&self, project: &str) {
         if let Ok(mut p) = self.paused.lock() {
@@ -367,6 +374,13 @@ async fn step(
         tracing::debug!("{}: busy, skipping this poll", listed.project);
         return None;
     };
+    // Pausing waits on this guard, so a pause that lands after the check
+    // above is still honored, and one that lands after this point waits for
+    // the action to finish.
+    let _acting = control.acting.lock().await;
+    if control.is_paused(&listed.project) {
+        return None;
+    }
     // Confirm under the lock: it may have been stopped or recreated.
     match e.inspect(&listed.id).await {
         Ok(Some(c)) if c.status == "running" && c.health.as_deref() == Some("unhealthy") => {}
@@ -418,15 +432,31 @@ mod tests {
         assert_eq!(p.delay(40), Duration::from_secs(300));
     }
 
-    #[test]
-    fn control_pauses_per_project() {
+    #[tokio::test]
+    async fn control_pauses_per_project() {
         let c = Control::default();
         let d = c.clone();
-        c.pause("a");
+        c.pause("a").await;
         assert!(d.is_paused("a"));
         assert!(!d.is_paused("b"));
         d.resume("a");
         assert!(!c.is_paused("a"));
+    }
+
+    #[tokio::test]
+    async fn pause_waits_for_an_action_in_progress() {
+        let c = Control::default();
+        let acting = c.acting.clone().lock_owned().await;
+        let d = c.clone();
+        let paused = tokio::spawn(async move { d.pause("a").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(c.is_paused("a"), "marked paused at once");
+        assert!(!paused.is_finished(), "returns only after the action");
+        drop(acting);
+        tokio::time::timeout(Duration::from_secs(1), paused)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
