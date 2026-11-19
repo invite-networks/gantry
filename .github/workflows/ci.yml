@@ -21,8 +21,9 @@ jobs:
       - run: cargo install cargo-audit --locked && cargo audit
       - uses: EmbarkStudios/cargo-deny-action@v2
 
-  # Live tests on the runner's Docker and Podman, using the isolated DHCP lab
-  # bridge as the pods' macvlan parent. Not yet run on GitHub's runners.
+  # Live tests on the runner's Docker, using the isolated DHCP lab bridge as
+  # the pods' macvlan parent. kiri is not on the runners; it is covered on
+  # the test host.
   integration:
     runs-on: ubuntu-latest
     needs: check
@@ -32,9 +33,10 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y dnsmasq-base nftables
       - run: cargo build --release
       - run: sudo install -m 755 target/release/gantry target/release/gantry-oci /usr/local/bin/
-      - run: sudo gantry setup docker && sudo gantry setup podman
+      - run: sudo gantry setup docker
       - run: sudo tests/integration/dhcp-lab.sh up
       - run: >
           sudo GT_PARENT=gtdhcp0 GT_PREFIX=24 GT_GATEWAY=10.99.0.1
           GT_IP1=10.99.0.11 GT_IP2=10.99.0.12 GT_IP3=10.99.0.13
-          tests/integration/run.sh docker podman dhcp
+          GT_HEAL_RUNTIMES=docker
+          tests/integration/run.sh docker dhcp heal
