@@ -91,6 +91,21 @@ dhcp() {
   check "default route from lease" sh -c "$K exec -T shell ip route | grep -q 'default via $gw '"
   check "resolv.conf from lease" sh -c "$K exec -T shell cat /etc/resolv.conf | grep -q '$dns'"
   check "server reachable" sh -c "$K exec -T shell ping -c1 -W2 $gw"
+  if [ -d /run/systemd/system ]; then
+    # Start the pod from a service that ends as soon as `up` returns, the
+    # way restarting gantry-agent would. The agent must live in its own
+    # scope and keep running after systemd cleans up the service's cgroup.
+    $K down >/dev/null 2>&1
+    systemd-run --quiet --wait --collect --unit=gt-dhcp-starter \
+      --setenv=PATH="$PATH" --setenv=GT_DHCP_PARENT="${GT_DHCP_PARENT:-}" \
+      --setenv=GANTRY_RUNTIME="${GANTRY_RUNTIME:-docker}" \
+      $K up -d >/dev/null 2>&1
+    sleep 1
+    pid=$(pgrep -f "dhcp-agent.*dhcplab" | head -1)
+    check "agent outlives the service that started it" test -n "$pid"
+    check "agent runs in its own scope" sh -c "grep -q 'gantry-dhcp-.*\.scope' /proc/$pid/cgroup"
+    check "address kept after the service ended" sh -c "$K exec -T shell ip -4 addr show eth0 | grep -q '$in_pool'"
+  fi
   $K down >/dev/null 2>&1
   check_not "agent stopped" pgrep -f "dhcp-agent.*dhcplab"
   [ -n "${GT_DHCP_PARENT:-}" ] && return

@@ -47,7 +47,9 @@ recreates them once if the new version changes how containers are created
 
 Running DHCP agents are the old binary until their pod is recreated. To move
 them to the new version, run `gantry down` and `gantry up -d` in a
-maintenance window.
+maintenance window. Agents started by 0.1.0 also still sit in the cgroup of
+whatever started them (a shell session or `gantry-boot.service`); from 0.1.1
+each new agent runs in its own `gantry-dhcp-*.scope`.
 
 ## Moving from the 0.2 or 0.3 test releases
 

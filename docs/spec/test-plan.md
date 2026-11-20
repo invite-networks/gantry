@@ -65,6 +65,7 @@ Run with `cargo test --all-targets`.
 | `backoff_doubles_to_the_cap` | `src/heal.rs` | FR-HEAL-05 |
 | `control_pauses_per_project`, `pause_waits_for_an_action_in_progress` | `src/heal.rs` | FR-HEAL-08 |
 | `actions_serialize_snake_case` | `src/heal.rs` | FR-HEAL-09 |
+| `helper_runs_gantry_not_the_library_caller`, `agent_unit_is_a_valid_scope_name` | `src/pod/mod.rs` | NFR-SEC-11, NFR-REL-05 |
 
 ### 3.1 Unit tests changed by the engine move
 
@@ -158,6 +159,9 @@ no firewall).
 | Default route from lease | dhcp | FR-ADDR-03 |
 | resolv.conf from lease | dhcp | FR-DNS-04 |
 | DHCP server reachable | dhcp | FR-ADDR-03 |
+| Agent outlives the service that started the pod | dhcp | NFR-REL-05 |
+| Agent runs in its own `gantry-dhcp-*.scope` | dhcp | NFR-REL-05 |
+| Address kept after the starting service ended | dhcp | NFR-REL-05 |
 | Lease released on `down` | dhcp | FR-ADDR-04 |
 | Agent stopped after `down` | dhcp | FR-ADDR-04, NFR-SEC-04 |
 | First lease from the first pool | dhcpmove | FR-ADDR-03 |
@@ -316,6 +320,8 @@ candidates for new tests.
 | NFR-PERF-01 to NFR-PERF-04 | MT-09, MT-10 |
 | NFR-PERF-06 | Planned unit test (3.2) and concurrency check (4.4) |
 | NFR-SEC-10 | Planned unit test (3.2) |
+| NFR-SEC-11 | `helper_runs_gantry_not_the_library_caller` |
+| NFR-REL-05 | dhcp scenario (agent scope checks), `agent_unit_is_a_valid_scope_name` |
 
 ## 8. Release gate
 

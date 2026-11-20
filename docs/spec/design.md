@@ -118,7 +118,15 @@ first error [NFR-REL-01].
 ### 4.3 DHCP agent
 
 The agent is `gantry internal dhcp-agent`, started detached with its
-output in `dhcp-<if>.log`. It enters the pod netns, opens a UDP socket bound
+output in `dhcp-<if>.log`. It runs the running binary when that is named
+`gantry`, and otherwise `/usr/bin/gantry`, so a library caller such as
+gantry-agent never re-executes itself [NFR-SEC-11]. When systemd is the
+init system it is started through `systemd-run --scope` as
+`gantry-dhcp-<project>-<pod>-<if>.scope`, which keeps it out of the
+caller's cgroup: stopping or restarting the caller's service leaves it
+running [NFR-REL-05]. The scope keeps the agent's PID, so the PID file and
+its checks are unchanged. The caller reaps the agent when it exits, so a
+long-lived library caller does not collect zombies. It enters the pod netns, opens a UDP socket bound
 to the device with the broadcast flag, and runs DISCOVER, OFFER, REQUEST,
 ACK with a client identifier `gantry-<project>-<pod>-<if>` [FR-ADDR-03]. On
 bind it applies the address and route, sends gratuitous ARP, writes

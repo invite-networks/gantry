@@ -317,11 +317,24 @@ fn start_dhcp_agent(
     default_route: bool,
 ) -> Result<()> {
     let dir = state::pod_dir(&project.name, &pod.name);
-    let exe = std::env::current_exe().ctx(|| "locate gantry binary".into())?;
+    let exe = helper_exe(std::env::current_exe().ok());
     let log =
         std::fs::File::create(dhcp::log_path(&dir, ifname)).ctx(|| "create dhcp log".into())?;
     let log2 = log.try_clone().ctx(|| "dup dhcp log".into())?;
-    let mut cmd = Command::new(exe);
+    let mut cmd = if Path::new(SYSTEMD_RUNTIME).exists() {
+        let unit = agent_unit(&project.name, &pod.name, ifname);
+        let mut c = Command::new("systemd-run");
+        c.args(["--scope", "--collect", "--quiet", "--unit", &unit])
+            .arg(format!(
+                "--description=Gantry DHCP agent {}/{}/{ifname}",
+                project.name, pod.name
+            ))
+            .arg("--")
+            .arg(&exe);
+        c
+    } else {
+        Command::new(&exe)
+    };
     cmd.args([
         "internal",
         "dhcp-agent",
@@ -358,10 +371,50 @@ fn start_dhcp_agent(
                 .map_err(std::io::Error::from)
         });
     }
-    let child = cmd.spawn().ctx(|| "start dhcp agent".into())?;
+    let mut child = cmd.spawn().ctx(|| "start dhcp agent".into())?;
     std::fs::write(dhcp::pid_path(&dir, ifname), child.id().to_string())
         .ctx(|| "write dhcp pid".into())?;
+    // A long-lived caller such as gantry-agent would otherwise collect a
+    // zombie for every agent that exits. The thread ends with the agent,
+    // or with this process if it exits first.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
+}
+
+/// Present when systemd is the init system.
+const SYSTEMD_RUNTIME: &str = "/run/systemd/system";
+
+/// The installed gantry binary that helpers run as.
+const GANTRY_BIN: &str = "/usr/bin/gantry";
+
+/// The binary a helper re-executes. The running program when it is gantry
+/// itself (so development builds run their own code), otherwise the
+/// installed gantry: a library caller such as gantry-agent is not a
+/// gantry binary. Never taken from configuration or the environment,
+/// because a root process must not let either choose what it executes.
+fn helper_exe(current: Option<PathBuf>) -> PathBuf {
+    current
+        .filter(|p| p.file_name().is_some_and(|n| n == "gantry"))
+        .unwrap_or_else(|| PathBuf::from(GANTRY_BIN))
+}
+
+/// The transient scope a DHCP agent runs in, which keeps it out of the
+/// caller's cgroup so restarting the caller's service leaves it running.
+fn agent_unit(project: &str, pod: &str, ifname: &str) -> String {
+    let raw = format!("gantry-dhcp-{project}-{pod}-{ifname}");
+    let clean: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{clean}.scope")
 }
 
 async fn wait_for_lease(dir: &Path, ifname: &str, wait: Duration) -> Result<()> {
@@ -607,4 +660,32 @@ pub fn etc_mounts(st: &PodState) -> Vec<(PathBuf, &'static str)> {
         v.push((dir.join("hostname"), "/etc/hostname"));
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helper_runs_gantry_not_the_library_caller() {
+        let dev = PathBuf::from("/home/me/gantry/target/debug/gantry");
+        assert_eq!(helper_exe(Some(dev.clone())), dev);
+        assert_eq!(
+            helper_exe(Some("/usr/bin/gantry-agent".into())),
+            PathBuf::from("/usr/bin/gantry")
+        );
+        assert_eq!(helper_exe(None), PathBuf::from("/usr/bin/gantry"));
+    }
+
+    #[test]
+    fn agent_unit_is_a_valid_scope_name() {
+        assert_eq!(
+            agent_unit("web", "front.1", "eth0"),
+            "gantry-dhcp-web-front.1-eth0.scope"
+        );
+        assert_eq!(
+            agent_unit("a", "b", "e@th/0"),
+            "gantry-dhcp-a-b-e_th_0.scope"
+        );
+    }
 }

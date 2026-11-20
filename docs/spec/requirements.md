@@ -247,6 +247,7 @@ Priority: **M** must, **S** should, **C** could.
 | NFR-SEC-08 | Random identifiers shall come from the operating system's random source. |
 | NFR-SEC-09 | Dependencies shall pass `cargo audit` and `cargo deny` in CI. |
 | NFR-SEC-10 | The `GANTRY_NFT` binary override shall be honored only in debug builds. Release builds always run `nft` from `PATH`. |
+| NFR-SEC-11 | A helper shall run the gantry binary that is running, when that binary is named `gantry`, and otherwise `/usr/bin/gantry`. Neither configuration nor the environment shall choose the helper binary. |
 
 ### 6.3 Performance
 
@@ -270,6 +271,7 @@ spent waiting on DHCP servers or healthchecks.
 | NFR-REL-02 | A stale namespace left by a crash shall be replaced on the next `up`. |
 | NFR-REL-03 | The DHCP agent shall survive transient errors and keep retrying. |
 | NFR-REL-04 | Engine API calls shall have explicit timeouts, except log following and attached exec sessions. |
+| NFR-REL-05 | A DHCP agent shall not depend on the process or service that started it: under systemd it runs in its own transient scope, so stopping or restarting the caller (the CLI, `gantry-boot.service`, or a library caller such as gantry-agent) leaves it running. |
 
 ### 6.5 Operability
 

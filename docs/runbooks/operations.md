@@ -63,6 +63,7 @@ Each DHCP interface has an agent process inside the pod namespace.
 
 ```sh
 ps -ef | grep 'gantry internal dhcp-agent'
+systemctl list-units 'gantry-dhcp-*.scope'               # one scope per agent
 cat /run/gantry/<project>/pods/<pod>/dhcp-eth0.json     # current lease
 tail -f /run/gantry/<project>/pods/<pod>/dhcp-eth0.log  # agent log
 ```

@@ -50,7 +50,7 @@ way `ip netns add` does, and every container joins them by path.
 
 ## Status
 
-Version 0.1.0, rapid development. Tested on Debian 13 (kernel 6.12) with
+Version 0.1.1, rapid development. Tested on Debian 13 (kernel 6.12) with
 Docker 29.9 and kiri 0.2.0. Rootful only. Podman support was removed in
 0.1.0.
 
@@ -169,7 +169,10 @@ Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
    gratuitous ARP. DHCP networks get a small agent process
    (`gantry internal dhcp-agent`) that lives in the pod namespace, holds the
    lease, renews it and releases it on `down`. When a lease changes address,
-   the agent rewrites every pod's hosts file and firewall.
+   the agent rewrites every pod's hosts file and firewall. Under systemd each
+   agent runs in its own `gantry-dhcp-*.scope`, so it keeps running when
+   whatever started the pod (a shell, `gantry-boot.service`, gantry-agent)
+   stops or restarts.
 3. **Shared files.** `/etc/hosts`, `/etc/resolv.conf` and `/etc/hostname`
    are written to the pod directory and bind mounted into every container.
 4. **Firewall.** The default policy and the pod's rules are rendered into
