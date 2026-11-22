@@ -58,7 +58,7 @@ jobs:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum *.deb > SHA256SUMS
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/*.deb
       - name: Create the release
