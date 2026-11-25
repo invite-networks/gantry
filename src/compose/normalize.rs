@@ -392,6 +392,10 @@ impl Service {
 
 /// The restart policy of a service that sets none. `restart: "no"` opts out.
 pub const DEFAULT_RESTART: &str = "unless-stopped";
+/// CPU cores a service gets when it sets no `cpus`. `cpus: 0` means no limit.
+pub const DEFAULT_CPUS: f64 = 1.0;
+/// Memory a service gets when it sets no `mem_limit` (2 GiB). `mem_limit: 0` means no limit.
+pub const DEFAULT_MEM_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Internal marker removed before the project is returned to callers.
 const RUNTIME_EXPLICIT: &str = "io.gantry.internal.runtime-explicit";
@@ -1258,18 +1262,21 @@ fn service(
         tty: s.tty,
         stdin_open: s.stdin_open,
         init: s.init,
-        mem_limit: s
-            .mem_limit
-            .map(|m| parse_bytes(&m.into_string()).map_err(|e| err(format!("mem_limit: {e}"))))
-            .transpose()?,
-        cpus: s
-            .cpus
-            .map(|c| {
-                c.into_string()
-                    .parse::<f64>()
-                    .map_err(|_| err("cpus must be a number".into()))
-            })
-            .transpose()?,
+        mem_limit: Some(
+            s.mem_limit
+                .map(|m| parse_bytes(&m.into_string()).map_err(|e| err(format!("mem_limit: {e}"))))
+                .transpose()?
+                .unwrap_or(DEFAULT_MEM_LIMIT),
+        ),
+        cpus: Some(
+            s.cpus
+                .map(|c| match c.into_string().parse::<f64>() {
+                    Ok(n) if n.is_finite() && n >= 0.0 => Ok(n),
+                    _ => Err(err("cpus must be a number, 0 or more".into())),
+                })
+                .transpose()?
+                .unwrap_or(DEFAULT_CPUS),
+        ),
         pids_limit: s.pids_limit,
         shm_size: s
             .shm_size
@@ -1676,6 +1683,24 @@ mod tests {
         assert_eq!(b.ifname, "mgmt");
         assert_eq!(b.addressing, Addressing::Dhcp);
         assert!(b.default_route);
+    }
+
+    #[test]
+    fn resource_limit_defaults() {
+        let p = try_load(&format!(
+            "name: t\n{POD}services:\n  a: {{ image: x }}\n  b: {{ image: x, cpus: 2.5, mem_limit: 512m }}\n  c: {{ image: x, cpus: 0, mem_limit: 0 }}\n"
+        ))
+        .unwrap();
+        let limits = |s: &str| (p.services[s].cpus, p.services[s].mem_limit);
+        assert_eq!(limits("a"), (Some(1.0), Some(2 * 1024 * 1024 * 1024)));
+        assert_eq!(limits("b"), (Some(2.5), Some(512 * 1024 * 1024)));
+        assert_eq!(limits("c"), (Some(0.0), Some(0)));
+        assert!(
+            try_load(&format!(
+                "name: t\n{POD}services:\n  a: {{ image: x, cpus: -1 }}\n"
+            ))
+            .is_err()
+        );
     }
 
     #[test]

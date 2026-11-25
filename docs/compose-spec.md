@@ -289,6 +289,9 @@ Supported keys: `image`, `pod`, `priority` (extension), `runtime` (extension), `
 Ignored with a warning: `deploy`, `scale`, `links`, `external_links` and
 unknown keys.
 
+A service that sets no `cpus` gets 1 CPU, and one that sets no `mem_limit`
+gets 2 GiB. Set `cpus: 0` or `mem_limit: 0` to run without that limit.
+
 ### health_on_failure
 
 **Extension.** What happens when the service's container turns
