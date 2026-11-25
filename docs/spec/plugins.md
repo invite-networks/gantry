@@ -201,25 +201,24 @@ would share records, so that is not supported.
 
 ## Group Access
 
-The .deb creates a `gantry` system group and installs
-`/etc/sudoers.d/gantry`:
+The package already creates a `gantry` system account and group for remote
+control. `/etc/sudoers.d/gantry` also gives people in that group gantry as
+root, excluding the remote control account itself:
 
 ```text
-Defaults:%gantry env_keep += "GANTRY_USER_ENV"
-%gantry ALL=(root) NOPASSWD: /usr/bin/gantry
+User_Alias GANTRY_USERS = %gantry, !gantry
+Defaults:GANTRY_USERS !env_reset
+GANTRY_USERS ALL=(root) NOPASSWD: /usr/bin/gantry
 ```
 
-When gantry runs as a non-root member of the group, it runs itself again with
+When `/usr/bin/gantry` runs as a non-root member, it replaces itself with
 `sudo -n /usr/bin/gantry ...`, keeping its arguments and working directory.
-`version`, `completion`, `internal man` and `config` run without elevating.
+`completion` and `internal man` run without elevating.
 
-sudo clears the environment, but compose interpolation needs the user's
-variables. Before elevating, gantry writes the environment to a mode 0600
-file in `$XDG_RUNTIME_DIR` (or a private directory under `/tmp`) and passes
-its path in `GANTRY_USER_ENV`, which the sudoers entry keeps. The root side
-reads and deletes the file and uses those variables for interpolation only.
-Registry credentials still come from root's Docker config, as with
-`sudo gantry` today.
+The environment is kept, as for a Docker CLI user, so compose interpolation,
+`~/` paths and the member's registry login behave as they expect. sudo still
+removes its unsafe variables and applies `secure_path`. The remote control
+account keeps `env_reset`.
 
 A non-member without root gets the current error, plus a hint to join the
 group.
@@ -230,7 +229,7 @@ The install guide says so.
 
 ## Phases
 
-1. Group access.
+1. Group access (done).
 2. Plugin discovery, manifest, protocol and hooks, with a test plugin in
    `tests/` that records what it receives.
 3. Address allocation through plugins.

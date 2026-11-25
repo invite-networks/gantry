@@ -364,6 +364,9 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    if let Some(code) = elevate(&cli.command) {
+        return code;
+    }
     let filter = tracing_subscriber::EnvFilter::try_new(format!("gantry={}", cli.global.log_level))
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("gantry=info"));
     tracing_subscriber::fmt()
@@ -432,10 +435,52 @@ fn require_root() -> Result<()> {
     if nix::unistd::geteuid().is_root() {
         Ok(())
     } else {
-        Err(Error::State(
-            "gantry runs rootful; run it as root (sudo)".into(),
-        ))
+        Err(Error::State(format!(
+            "gantry runs rootful; run it as root (sudo), or have an admin add you to \
+             the {GANTRY_GROUP} group (usermod -aG {GANTRY_GROUP} <user>) and log in again"
+        )))
     }
+}
+
+/// Group whose members run the installed gantry as root through sudo,
+/// as granted by /etc/sudoers.d/gantry.
+const GANTRY_GROUP: &str = "gantry";
+/// The path the sudoers entry names.
+const INSTALLED_BIN: &str = "/usr/bin/gantry";
+
+/// Runs the command again through `sudo -n` when a non-root member of the
+/// gantry group starts the installed binary. Returns only when it did not
+/// replace this process: `None` to carry on unelevated, or the exit code
+/// when sudo could not be started.
+fn elevate(cmd: &Cmd) -> Option<ExitCode> {
+    use std::os::unix::process::CommandExt;
+    let local_only = matches!(
+        cmd,
+        Cmd::Completion { .. } | Cmd::Internal(InternalCmd::Man | InternalCmd::DhcpAgent { .. })
+    );
+    if local_only || nix::unistd::geteuid().is_root() || !in_gantry_group() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    if exe != std::path::Path::new(INSTALLED_BIN) {
+        return None;
+    }
+    let err = std::process::Command::new("sudo")
+        .arg("-n")
+        .arg("--")
+        .arg(&exe)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    eprintln!("gantry: run sudo: {err}");
+    Some(ExitCode::from(1))
+}
+
+fn in_gantry_group() -> bool {
+    use nix::unistd::{Group, getegid, getgroups};
+    let Ok(Some(group)) = Group::from_name(GANTRY_GROUP) else {
+        return false;
+    };
+    getegid() == group.gid || getgroups().is_ok_and(|gs| gs.contains(&group.gid))
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {

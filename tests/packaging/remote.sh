@@ -95,6 +95,18 @@ chmod 750 /mnt/container-local; dpkg-reconfigure gantry >/dev/null 2>&1
 su -s /bin/sh gantry -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"
 su -s /bin/sh gantry -c 'sudo -n id' >/dev/null 2>&1 && bad "sudo id" || ok "no sudo id"
 
+echo "--- gantry group"
+useradd -m -G gantry alice
+useradd -m bob
+su alice -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && ok "member may sudo gantry" || bad "member cannot sudo gantry"
+su alice -c 'sudo -n id' >/dev/null 2>&1 && bad "member may sudo id" || ok "member cannot sudo id"
+# gantry ls needs root; a member gets there without typing sudo.
+su alice -c 'gantry ls' >/dev/null 2>&1 && ok "member elevates automatically" || bad "member not elevated: $(su alice -c 'gantry ls' 2>&1)"
+mkdir -p /tmp/envtest && printf 'name: ${PNAME}\nservices: {}\n' >/tmp/envtest/compose.yaml
+su alice -c 'cd /tmp/envtest && PNAME=fromalice gantry config --json' 2>&1 | grep -q fromalice && ok "member environment reaches interpolation" || bad "environment lost: $(su alice -c 'cd /tmp/envtest && PNAME=fromalice gantry config --json' 2>&1 | head -3)"
+su bob -c 'gantry ls' 2>&1 | grep -q 'gantry group' && ok "non-member told about the group" || bad "non-member: $(su bob -c 'gantry ls' 2>&1)"
+su bob -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "non-member may sudo gantry" || ok "non-member cannot sudo gantry"
+
 echo "--- logs"; grep -h "gantry-run\|gantry-ssh" /var/log/auth.log 2>/dev/null | tail -3
 
 echo "--- purge"

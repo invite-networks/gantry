@@ -27,7 +27,7 @@ ssh gantry@host demo up   -->   sshd (Match User gantry)
 | account `gantry` | System account, home `/var/lib/gantry` (root owned), no password. Created on install, removed on purge. |
 | `/etc/ssh/sshd_config.d/gantry.conf` | For the `gantry` account only: keys come from `/etc/gantry/remote/authorized_keys`, key login only, the forced command, no TTY, no forwarding. |
 | `/etc/gantry/remote/authorized_keys` | Root owned and empty at install, so nobody can log in until you add a key. |
-| `/etc/sudoers.d/gantry` | `gantry` may run `/usr/libexec/gantry/gantry-run` as root, and nothing else. |
+| `/etc/sudoers.d/gantry` | `gantry` may run `/usr/libexec/gantry/gantry-run` as root, and nothing else. The same file lets people in the `gantry` group run gantry as root (see [install](install.md#8-run-gantry-without-sudo)); the `gantry` account itself is excluded from that rule. |
 | `/usr/libexec/gantry/gantry-ssh` | The forced command. Splits the request into words without a shell and calls `gantry-run` through sudo. |
 | `/usr/libexec/gantry/gantry-run` | Checks the project and the command, then runs Gantry as root in the project directory. |
 

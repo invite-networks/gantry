@@ -223,10 +223,34 @@ Validate: `systemctl is-enabled gantry-boot.service` says `enabled`,
 | `GANTRY_LOG` | `info` | Log level |
 | `GANTRY_OCI_RUNTIME` | `runc` | Runtime the shim hands off to (set in dockerd's environment) |
 
-These are read by a root process. Do not configure sudo to keep the
-caller's environment for Gantry.
+These are read by a root process. Members of the `gantry` group (see
+[Run gantry without sudo](#8-run-gantry-without-sudo)) keep their
+environment, which is safe only because membership is already equivalent to
+root. Do not keep the environment for any narrower sudo rule.
 
-## 8. Uninstall
+## 8. Run gantry without sudo
+
+Trigger: a person should operate Gantry on this host without typing sudo.
+
+```sh
+sudo usermod -aG gantry alice     # then alice logs out and back in
+```
+
+A member runs `gantry up`, `gantry ps` and the rest directly. Gantry runs
+itself as root through `sudo -n`, allowed by `/etc/sudoers.d/gantry`, with
+the member's environment kept so compose interpolation, `~/` paths and their
+Docker registry login work as they would for them. This applies only to the
+installed `/usr/bin/gantry`.
+
+**The `gantry` group is equivalent to root**, as the `docker` group is: a
+compose file can bind mount `/` or run privileged containers. Add only people
+you would give root. The remote control account shares the group name but
+is excluded from this rule.
+
+Validate as the member: `gantry ls` runs without a password prompt, and
+`sudo -n id` is still refused.
+
+## 9. Uninstall
 
 Trigger: removing Gantry from a host.
 

@@ -1,6 +1,17 @@
 # Installed by the gantry package as /etc/sudoers.d/gantry.
-# The gantry account may run gantry-run as root, and nothing else.
-# gantry-run accepts only projects in root-owned /etc/gantry/<name>
-# directories and a fixed set of commands.
+
+# Remote control: the gantry account may run gantry-run as root, and
+# nothing else. gantry-run accepts only projects in root-owned
+# /etc/gantry/<name> directories and a fixed set of commands.
 Defaults:gantry env_reset, !requiretty
 gantry ALL=(root) NOPASSWD: /usr/libexec/gantry/gantry-run
+
+# People in the gantry group may run gantry as root without a password.
+# gantry runs itself through sudo for them, so they never type it. The
+# environment is kept (sudo still removes its unsafe variables and sets
+# secure_path) so compose interpolation sees the caller's variables. The
+# remote control account is excluded even though gantry is its group.
+# Membership is equivalent to root, as it is for the docker group.
+User_Alias GANTRY_USERS = %gantry, !gantry
+Defaults:GANTRY_USERS !env_reset
+GANTRY_USERS ALL=(root) NOPASSWD: /usr/bin/gantry
