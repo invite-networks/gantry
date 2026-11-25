@@ -1,17 +1,17 @@
 #!/bin/sh
-# gantry-ssh: the forced command for the gantry account (see
+# gantry-ssh: the forced command for the gantry-remote account (see
 # /etc/ssh/sshd_config.d/gantry.conf). It splits the requested command into
 # words, without a shell, and hands them to gantry-run through sudo.
 #
-#   ssh gantry@host <project> up --wait
-#   ssh gantry@host gantry <project> logs --tail 50 web
+#   ssh gantry-remote@host <project> up --wait
+#   ssh gantry-remote@host gantry <project> logs --tail 50 web
 set -eu
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
 cmd=${SSH_ORIGINAL_COMMAND:-}
 if [ -z "$cmd" ]; then
-	echo "usage: ssh gantry@host <project> <command> [args]   (or: ls, version, help)" >&2
+	echo "usage: ssh gantry-remote@host <project> <command> [args]   (or: ls, version, help)" >&2
 	exit 64
 fi
 case $cmd in

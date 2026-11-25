@@ -264,7 +264,7 @@ Priority: **M** must, **S** should, **C** could.
 | NFR-SEC-08 | Random identifiers shall come from the operating system's random source. |
 | NFR-SEC-09 | Dependencies shall pass `cargo audit` and `cargo deny` in CI. |
 | NFR-SEC-10 | The `GANTRY_NFT` binary override shall be honored only in debug builds. Release builds always run `nft` from `PATH`. |
-| NFR-SEC-12 | `/etc/sudoers.d/gantry` shall grant members of the `gantry` group `/usr/bin/gantry` as root without a password and with their environment, and shall exclude the `gantry` remote control account from that rule. Documentation shall state that membership is equivalent to root. | M |
+| NFR-SEC-12 | `/etc/sudoers.d/gantry` shall grant members of the `gantry` group `/usr/bin/gantry` as root without a password and with their environment, The remote control account shall be `gantry-remote` in its own group, never a member of `gantry`; upgrading from the pre-0.2.0 `gantry` account shall rename it in place, keeping its uid. Documentation shall state that membership is equivalent to root. | M |
 | NFR-SEC-13 | The `GANTRY_PLUGIN_DIR` search override shall be honored only in debug builds. | M |
 | NFR-SEC-11 | A helper shall run the gantry binary that is running, when that binary is named `gantry`, and otherwise `/usr/bin/gantry`. Neither configuration nor the environment shall choose the helper binary. |
 

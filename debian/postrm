@@ -1,18 +1,20 @@
 #!/bin/sh
-# On purge, removes the remote control account and its key file. The
-# sshd and sudoers drop-ins are conffiles and dpkg removes them.
+# On purge, removes the remote control account, the gantry group and the
+# key file. The sshd and sudoers drop-ins are conffiles and dpkg removes them.
 set -e
 
 if [ "$1" = purge ]; then
 	rm -f /etc/gantry/remote/authorized_keys
 	rmdir /etc/gantry/remote 2>/dev/null || true
 	rmdir /etc/gantry 2>/dev/null || true
-	if getent passwd gantry >/dev/null; then
-		userdel gantry || true
+	if getent passwd gantry-remote >/dev/null; then
+		userdel gantry-remote || true
 	fi
-	if getent group gantry >/dev/null; then
-		groupdel gantry 2>/dev/null || true
-	fi
+	for g in gantry-remote gantry; do
+		if getent group "$g" >/dev/null; then
+			groupdel "$g" 2>/dev/null || true
+		fi
+	done
 	rm -f /var/lib/gantry/boot/*
 	rmdir /var/lib/gantry/boot 2>/dev/null || true
 	if command -v deb-systemd-helper >/dev/null 2>&1; then

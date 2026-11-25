@@ -1,16 +1,30 @@
 #!/bin/sh
-# Sets up the gantry account for remote control over SSH (see
+# Sets up the gantry group (people who may run gantry as root through
+# sudo) and the gantry-remote account for remote control over SSH (see
 # docs/runbooks/remote.md). The account cannot log in until a key is added
 # to /etc/gantry/remote/authorized_keys.
 set -e
 
 if [ "$1" = configure ]; then
-	if ! getent passwd gantry >/dev/null; then
-		useradd --system --user-group --home-dir /var/lib/gantry \
-			--shell /bin/sh --comment "Gantry remote control" gantry
-		# No password, but not locked: sshd without PAM refuses locked
-		# accounts even for key logins.
-		usermod -p '*' gantry
+	if ! getent group gantry >/dev/null; then
+		groupadd --system gantry
+	fi
+	if ! getent passwd gantry-remote >/dev/null; then
+		if [ "$(getent passwd gantry | cut -d: -f6)" = /var/lib/gantry ]; then
+			# Before 0.2.0 the remote control account was named gantry, with
+			# gantry as its own group. Rename it in place, so its uid and
+			# anything keyed to it survive, and give it its own group.
+			getent group gantry-remote >/dev/null || groupadd --system gantry-remote
+			if ! usermod -l gantry-remote -g gantry-remote gantry; then
+				echo "gantry: could not rename the gantry account to gantry-remote (is it logged in?); run dpkg-reconfigure gantry once its sessions end" >&2
+			fi
+		else
+			useradd --system --user-group --home-dir /var/lib/gantry \
+				--shell /bin/sh --comment "Gantry remote control" gantry-remote
+			# No password, but not locked: sshd without PAM refuses locked
+			# accounts even for key logins.
+			usermod -p '*' gantry-remote
+		fi
 	fi
 	install -d -o root -g root -m 0755 /var/lib/gantry /etc/gantry /etc/gantry/remote
 	# Local project storage, found through /mnt/* in project-dirs. Created

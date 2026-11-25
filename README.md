@@ -289,13 +289,13 @@ sudo gantry boot ls                       # the order boot will use
 ## Remote control
 
 Gantry runs on the host it manages. To drive it from elsewhere, the package
-sets up a `gantry` account that can only operate installed projects over
+sets up a `gantry-remote` account that can only operate installed projects over
 SSH, once you add a key to
 `/etc/gantry/remote/authorized_keys`:
 
 ```sh
-ssh gantry@host myproject up --wait
-ssh gantry@host myproject logs --tail 100 web
+ssh gantry-remote@host myproject up --wait
+ssh gantry-remote@host myproject logs --tail 100 web
 ```
 
 See [docs/runbooks/remote.md](docs/runbooks/remote.md).

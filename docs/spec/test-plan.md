@@ -331,7 +331,7 @@ candidates for new tests.
 | NFR-REL-05 | dhcp scenario (agent scope checks), `agent_unit_is_a_valid_scope_name` |
 | FR-ADDR-07 | `plugin_addresses`, `allocation_tests::replies`, plugins scenario (allocation checks) |
 | FR-CMP-10 | `resource_limit_defaults` |
-| FR-CLI-19, NFR-SEC-12 | `tests/packaging/remote.sh` (gantry group checks: member elevates, keeps environment, cannot sudo other commands; non-member refused and told about the group; remote account still refused) |
+| FR-CLI-19, NFR-SEC-12 | `tests/packaging/remote.sh` (gantry group checks: member elevates, keeps environment, cannot sudo other commands; non-member refused and told about the group; `gantry-remote` outside the group and still refused), `tests/packaging/rename.sh` (old `gantry` account renamed with the same uid) |
 | FR-CLI-20 | Review |
 | FR-PLUG-01 | `manifests_and_overrides`, `writable_manifest_is_refused` |
 | FR-PLUG-02, FR-PLUG-03 | `sync_and_async_events_reach_the_plugin`, plugins scenario (hello) |

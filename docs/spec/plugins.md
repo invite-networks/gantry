@@ -236,14 +236,14 @@ would share records, so that is not supported.
 
 ## Group Access
 
-The package already creates a `gantry` system account and group for remote
-control. `/etc/sudoers.d/gantry` also gives people in that group gantry as
-root, excluding the remote control account itself:
+The `gantry` group is for people. The remote control account is
+`gantry-remote`, in its own `gantry-remote` group; before 0.2.0 it was
+named `gantry`, and upgrades rename it in place. `/etc/sudoers.d/gantry`
+gives the group gantry as root:
 
 ```text
-User_Alias GANTRY_USERS = %gantry, !gantry
-Defaults:GANTRY_USERS !env_reset
-GANTRY_USERS ALL=(root) NOPASSWD: /usr/bin/gantry
+Defaults:%gantry !env_reset
+%gantry ALL=(root) NOPASSWD: /usr/bin/gantry
 ```
 
 When `/usr/bin/gantry` runs as a non-root member, it replaces itself with

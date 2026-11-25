@@ -52,7 +52,7 @@ The package installs `gantry` and `gantry-oci` in `/usr/bin`, the
 completions. It creates `/mnt/container-local` (root owned, mode 0755) for
 local project storage when it does not exist; an existing directory or
 mountpoint is left as it is, and purging the package never removes it. It also sets up
-the restricted `gantry` account for remote control over SSH, which cannot
+the restricted `gantry-remote` account for remote control over SSH, which cannot
 log in until a key is added; see [remote](remote.md).
 
 ### 2b. From source
@@ -244,8 +244,8 @@ installed `/usr/bin/gantry`.
 
 **The `gantry` group is equivalent to root**, as the `docker` group is: a
 compose file can bind mount `/` or run privileged containers. Add only people
-you would give root. The remote control account shares the group name but
-is excluded from this rule.
+you would give root. The remote control account is `gantry-remote`, in its
+own group, and is not affected.
 
 Validate as the member: `gantry ls` runs without a password prompt, and
 `sudo -n id` is still refused.

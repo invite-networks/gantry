@@ -1,6 +1,6 @@
 #!/bin/sh
 # Package test for remote control over SSH. Installs the .deb in a throwaway
-# Debian container and drives the restricted gantry account over ssh:
+# Debian container and drives the restricted gantry-remote account over ssh:
 #   docker run --rm -v "$PWD/target/debian:/out:ro" \
 #     -v "$PWD/tests/packaging/remote.sh:/test.sh:ro" debian:trixie sh /test.sh
 # Do not run it on a real host: it installs packages, starts sshd and purges gantry.
@@ -18,7 +18,7 @@ ok() { pass=$((pass + 1)); echo "PASS $*"; }
 bad() { fail=$((fail + 1)); echo "FAIL $*"; }
 
 echo "--- install state"
-getent passwd gantry
+getent passwd gantry-remote
 stat -c '%U %a %n' /etc/gantry /etc/gantry/remote /etc/gantry/remote/authorized_keys /etc/sudoers.d/gantry /usr/libexec/gantry/gantry-run /var/lib/gantry
 visudo -cqf /etc/sudoers.d/gantry && ok sudoers valid || bad sudoers
 # The Match block must not leak to other users.
@@ -27,7 +27,10 @@ sshd -T -C user=root,host=x,addr=127.0.0.1 | grep -qi '^forcecommand none' && ok
 grep -n "^Include\|^X11Forwarding" /etc/ssh/sshd_config
 sshd -T -C user=root,host=x,addr=127.0.0.1 | grep -qi '^x11forwarding yes' && ok "main config after Include still applies" || bad "Match block swallowed the main config"
 sshd -T -C user=root,host=x,addr=127.0.0.1 | grep -qi '^permittty yes' && ok "root keeps PermitTTY" || bad "PermitTTY leaks"
-sshd -T -C user=gantry,host=x,addr=127.0.0.1 | grep -i '^forcecommand /usr/libexec/gantry/gantry-ssh' >/dev/null && ok "ForceCommand for gantry" || bad "no ForceCommand for gantry"
+sshd -T -C user=gantry-remote,host=x,addr=127.0.0.1 | grep -i '^forcecommand /usr/libexec/gantry/gantry-ssh' >/dev/null && ok "ForceCommand for gantry-remote" || bad "no ForceCommand for gantry-remote"
+sshd -T -C user=gantry,host=x,addr=127.0.0.1 | grep -qi '^forcecommand none' && ok "no Match for a user named gantry" || bad "Match applies to gantry"
+id -nG gantry-remote | tr ' ' '\n' | grep -qx gantry && bad "gantry-remote is in the gantry group" || ok "gantry-remote not in the gantry group"
+getent group gantry >/dev/null && ok "gantry group exists" || bad "no gantry group"
 
 mkdir -p /etc/gantry/demo
 cat > /etc/gantry/demo/gantry.yaml <<'Y'
@@ -38,7 +41,7 @@ services:
   nginx: { image: nginx:alpine, pod: web }
 Y
 ssh-keygen -q -t ed25519 -N '' -f /root/k
-S="ssh -i /root/k -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR gantry@127.0.0.1"
+S="ssh -i /root/k -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR gantry-remote@127.0.0.1"
 
 $S demo config --services >/dev/null 2>&1 && bad "login before a key was added" || ok "no login without a key"
 cat /root/k.pub >> /etc/gantry/remote/authorized_keys
@@ -61,14 +64,14 @@ for c in "demo exec nginx sh" "demo run nginx sh" "demo down -v" "demo pod exec 
 	out=$($S "$c" 2>&1) && bad "allowed: $c -> $out" || ok "refused: $c -> $(echo "$out" | tail -1)"
 done
 $S -t demo config --services 2>&1 | grep -q nginx && ok "tty request still runs" || bad "tty"
-ssh -i /root/k -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR -N -L 9999:127.0.0.1:22 gantry@127.0.0.1 -o ExitOnForwardFailure=yes &
+ssh -i /root/k -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR -N -L 9999:127.0.0.1:22 gantry-remote@127.0.0.1 -o ExitOnForwardFailure=yes &
 sleep 2; kill $! 2>/dev/null
 ssh -i /root/k -o StrictHostKeyChecking=no -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=3 -p 9999 root@127.0.0.1 true 2>/dev/null && bad "port forwarding works" || ok "no port forwarding"
 
 # Ownership checks: a writable project must be refused.
 chmod 775 /etc/gantry/demo; out=$($S demo config --services 2>&1) && bad "group writable dir allowed" || ok "group writable dir: $out"; chmod 755 /etc/gantry/demo
-chown gantry /etc/gantry/demo/gantry.yaml; out=$($S demo config 2>&1) && bad "gantry-owned file allowed" || ok "gantry-owned file: $out"; chown root /etc/gantry/demo/gantry.yaml
-mkdir -p /etc/gantry/demo/app; chown gantry /etc/gantry/demo/app; out=$($S demo config 2>&1) && bad "gantry-owned subdir allowed" || ok "gantry-owned subdir: $out"; rm -r /etc/gantry/demo/app
+chown gantry-remote /etc/gantry/demo/gantry.yaml; out=$($S demo config 2>&1) && bad "gantry-owned file allowed" || ok "gantry-owned file: $out"; chown root /etc/gantry/demo/gantry.yaml
+mkdir -p /etc/gantry/demo/app; chown gantry-remote /etc/gantry/demo/app; out=$($S demo config 2>&1) && bad "gantry-owned subdir allowed" || ok "gantry-owned subdir: $out"; rm -r /etc/gantry/demo/app
 mkdir -p /etc/gantry/demo/data; chown 999:999 /etc/gantry/demo/data; out=$($S demo config --services 2>&1) && ok "container-owned data dir allowed" || bad "data dir refused: $out"; rm -r /etc/gantry/demo/data
 ln -s /tmp /etc/gantry/link; out=$($S link config 2>&1) && bad "symlinked project allowed" || ok "symlinked project: $out"; rm /etc/gantry/link
 # A project kept next to its data under /mnt, found through project-dirs.
@@ -76,7 +79,7 @@ grep -qx '/mnt/\*' /etc/gantry/project-dirs && ok "project-dirs ships /mnt/*" ||
 mkdir -p /mnt/store/demo2; cp /etc/gantry/demo/gantry.yaml /mnt/store/demo2/
 out=$($S demo2 config --services 2>&1) && [ "$out" = nginx ] && ok "project under /mnt: $out" || bad "project under /mnt refused: $out"
 chmod 775 /mnt/store; out=$($S demo2 config 2>&1) && bad "group writable parent allowed" || ok "group writable parent: $out"; chmod 755 /mnt/store
-chown gantry /mnt/store; out=$($S demo2 config 2>&1) && bad "gantry-owned parent allowed" || ok "gantry-owned parent: $out"; chown root /mnt/store
+chown gantry-remote /mnt/store; out=$($S demo2 config 2>&1) && bad "gantry-owned parent allowed" || ok "gantry-owned parent: $out"; chown root /mnt/store
 chmod 777 /mnt/store/demo2; out=$($S demo2 config 2>&1) && bad "world writable project allowed" || ok "world writable project: $out"; chmod 755 /mnt/store/demo2
 mkdir -p /mnt/other/demo2; out=$($S demo2 config 2>&1) && bad "duplicate name allowed" || ok "duplicate name: $out"; rmdir /mnt/other/demo2
 chmod 664 /etc/gantry/project-dirs; out=$($S demo2 config 2>&1) && bad "writable project-dirs allowed" || ok "writable project-dirs: $out"; chmod 644 /etc/gantry/project-dirs
@@ -92,8 +95,8 @@ chmod 750 /mnt/container-local; dpkg-reconfigure gantry >/dev/null 2>&1
 [ -L /etc/systemd/system/multi-user.target.wants/gantry-boot.service ] && ok "gantry-boot.service enabled" || bad "gantry-boot.service not enabled"
 
 # Direct sudo for anything else must fail.
-su -s /bin/sh gantry -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"
-su -s /bin/sh gantry -c 'sudo -n id' >/dev/null 2>&1 && bad "sudo id" || ok "no sudo id"
+su -s /bin/sh gantry-remote -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"
+su -s /bin/sh gantry-remote -c 'sudo -n id' >/dev/null 2>&1 && bad "sudo id" || ok "no sudo id"
 
 echo "--- gantry group"
 useradd -m -G gantry alice
@@ -111,7 +114,8 @@ echo "--- logs"; grep -h "gantry-run\|gantry-ssh" /var/log/auth.log 2>/dev/null 
 
 echo "--- purge"
 apt-get purge -y -qq gantry >/dev/null 2>&1
-getent passwd gantry && bad "user left after purge" || ok "user removed"
+getent passwd gantry-remote && bad "user left after purge" || ok "user removed"
+getent group gantry && bad "gantry group left after purge" || ok "gantry group removed"
 [ -d /mnt/container-local ] && ok "container-local kept after purge" || bad "container-local removed by purge"
 ls /etc/sudoers.d/gantry /etc/ssh/sshd_config.d/gantry.conf /etc/gantry/remote 2>&1 | grep -c "No such" | grep -q 3 && ok "files removed" || bad "files left: $(ls /etc/gantry /etc/sudoers.d /etc/ssh/sshd_config.d)"
 echo "RESULT $pass passed, $fail failed"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # gantry-run: runs one allowed Gantry command for a project under
-# /etc/gantry, as root. The gantry account reaches it through sudo, from
+# /etc/gantry, as root. The gantry-remote account reaches it through sudo, from
 # gantry-ssh. Only projects in root-owned directories and a fixed set of
 # commands and flags are accepted, so the account can operate projects but
 # cannot change what they run.
