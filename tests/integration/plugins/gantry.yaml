@@ -1,0 +1,15 @@
+# Plugin scenario: one loopback-only service and a recording plugin
+# (recorder/) that writes every message it gets to recorder/got.
+name: gtplug
+
+plugins:
+  recorder:
+    enabled: ${GT_PLUGIN_ENABLED:-true}
+    tenant: acme
+
+services:
+  app:
+    image: busybox:1.37
+    network_mode: none
+    command: [sleep, "3600"]
+    stop_grace_period: 1s

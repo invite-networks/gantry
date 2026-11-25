@@ -1,0 +1,12 @@
+api = 1
+name = "recorder"
+version = "0.0.0"
+exec = ["run"]
+
+[hooks]
+pre_up = { mode = "sync", timeout = "5s" }
+post_up = { mode = "sync", timeout = "5s" }
+post_stop = { mode = "sync" }
+post_start = { mode = "sync" }
+post_restart = { mode = "sync" }
+post_down = { mode = "async" }

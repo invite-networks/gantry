@@ -79,30 +79,43 @@ The first release of gantry-nautobot subscribes to `post_up` and
 ## Protocol
 
 Gantry starts a plugin at most once per command, at the first event that
-needs it. It talks over the plugin's stdin and stdout, one JSON object per
-line. The plugin's stderr goes to gantry's log, prefixed with the plugin
-name.
+needs it, in the plugin's directory. It talks over the plugin's stdin and
+stdout, one JSON object per line. The plugin's stderr is appended to
+`/var/log/gantry/plugins/<name>.log`, so it can still log after gantry
+exits.
 
 ```text
-gantry -> {"type":"hello","api":1,"gantry":"0.2.0","host":"node1","lock":"/run/gantry/plugins/nautobot/shop.lock"}
-gantry -> {"id":1,"type":"event","hook":"post_up","mode":"sync","deadline":"2026-11-25T18:00:30Z","data":{...}}
+gantry -> {"type":"hello","api":1,"gantry":"0.2.0","plugin":"nautobot","host":"node1","project":"shop","lock":"/run/gantry/plugins/nautobot/shop.lock"}
+gantry -> {"id":1,"type":"event","hook":"post_up","mode":"sync","deadline_ms":1795629630000,"data":{...}}
 plugin -> {"id":1,"ok":true}
-gantry -> {"id":2,"type":"allocate","data":{...}}
+gantry -> {"id":2,"type":"allocate","deadline_ms":1795629645000,"data":{...}}
 plugin -> {"id":2,"ok":true,"result":{"address":"192.0.2.218/29","gateway":"192.0.2.222"}}
-plugin -> {"id":3,"ok":false,"error":"no free address in 192.0.2.216/29"}
+gantry -> {"type":"event","hook":"post_down","mode":"async","deadline_ms":1795629750000,"data":{...}}
 ```
 
+- A sync event or `allocate` carries an `id`; the plugin answers it with
+  `{"id":N,"ok":true}` (plus `result` for `allocate`) or
+  `{"id":N,"ok":false,"error":"..."}`. An async event has no `id` and gets
+  no answer. Answers may come in any order. Lines that are not JSON are
+  logged and ignored.
+- `deadline_ms` is milliseconds since the Unix epoch (UTC). Gantry stops
+  waiting at that time, and the plugin should stop working by it.
 - Gantry closes stdin after its last event. The plugin finishes what is
   queued and exits.
 - The plugin starts in its own session (`setsid`), so it outlives gantry and
   finishes async events after gantry exits. It must ignore a broken stdout
-  pipe and stop by the last `deadline` it received.
+  pipe.
 - `lock` is a per project, per plugin file. The plugin holds `flock` on it
   while it works, so a late async `post_down` cannot land after the next
   `up`'s `post_up`. The next plugin process for the same project waits for
   the lock.
-- Plugins run as root with gantry's environment cleared, except `PATH`,
-  `LANG` and `GANTRY_PLUGIN_*`.
+- Plugins run with gantry's privileges (root) and an environment holding
+  only `PATH`, `LANG`, `LC_ALL`, `GANTRY_PLUGIN_NAME` and
+  `GANTRY_PLUGIN_CONFIG` (the path of its settings file).
+- The manifest and the program must be owned by root and not writable by
+  their group or others, or the plugin is skipped with a warning.
+- Debug builds search `GANTRY_PLUGIN_DIR` instead of the system
+  directories when it is set, for tests. Release builds ignore it.
 
 ## Event Data
 
@@ -111,7 +124,7 @@ Each event carries the project as gantry sees it after the step finished.
 ```json
 {
   "project": "shop",
-  "compose_files": ["/srv/shop/compose.yaml"],
+  "dir": "/srv/shop",
   "settings": { "tenant": "acme" },
   "pods": [{
     "name": "web",
@@ -119,22 +132,26 @@ Each event carries the project as gantry sees it after the step finished.
     "hostname": "web",
     "state": "running",
     "interfaces": [{
-      "name": "eth0", "parent": "vlan4", "driver": "macvlan",
-      "address": "192.0.2.218/29", "gateway": "192.0.2.222",
-      "address6": null, "gateway6": null, "default_route": true,
-      "mac": "02:42:c0:00:02:da", "from": null
+      "name": "eth0", "parent": "vlan4", "driver": "macvlan", "dhcp": false,
+      "addresses": ["192.0.2.218/29"], "gateway": "192.0.2.222",
+      "gateway6": null, "default_route": true, "mac": "02:42:c0:00:02:da"
     }],
     "containers": [{
-      "service": "nginx", "name": "shop-nginx-1", "engine": "docker",
-      "id": "4f1c...", "image": "nginx:alpine", "digest": "sha256:...",
-      "state": "running", "restart": "unless-stopped", "restart_count": 0,
+      "service": "nginx", "name": "shop-nginx-1", "id": "4f1c...",
+      "engine": "docker", "image": "nginx:alpine", "state": "running",
+      "health": null, "restart": "unless-stopped",
       "command": ["nginx", "-g", "daemon off;"],
       "cpus": 1.0, "mem_limit": 2147483648, "labels": {},
-      "volumes": [{ "type": "volume", "name": "shop_data", "source": null, "target": "/data", "read_only": false }]
+      "volumes": [{ "type": "volume", "name": "shop_data", "source": "/var/lib/docker/volumes/shop_data/_data", "target": "/data" }]
     }]
   }]
 }
 ```
+
+A pod's `state` is `running` when one of its containers runs, `created`
+when it exists with none running, and `down` after `gantry down`, where
+every container is `down` too. `heal_restart` adds a `heal` object: the
+watcher's action (project, pod, service, container, attempt, trigger, time).
 
 Environment variables, secrets and registry credentials are never sent.
 `settings` is the project's `plugins.<name>` block with `enabled` removed.
@@ -231,6 +248,6 @@ The install guide says so.
 
 1. Group access (done).
 2. Plugin discovery, manifest, protocol and hooks, with a test plugin in
-   `tests/` that records what it receives.
+   `tests/` that records what it receives (done).
 3. Address allocation through plugins.
 4. gantry-nautobot in its own repository, once invite-nautobot 0.4.0 ships.

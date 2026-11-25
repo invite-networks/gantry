@@ -272,6 +272,9 @@ fn emit(actions: &Option<mpsc::Sender<HealAction>>, a: HealAction) {
         a.cap,
         a.trigger
     );
+    if a.kind == HealKind::Restarted {
+        tokio::spawn(crate::orchestrator::notify_heal_restart(a.clone()));
+    }
     if let Some(tx) = actions
         && let Err(e) = tx.try_send(a)
     {

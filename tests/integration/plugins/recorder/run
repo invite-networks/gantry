@@ -1,0 +1,7 @@
+#!/bin/sh
+# Appends every line to ./got and answers each request that has an id.
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> got
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  [ -n "$id" ] && printf '{"id":%s,"ok":true}\n' "$id"
+done

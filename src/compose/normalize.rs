@@ -372,6 +372,12 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         }
     }
 
+    let plugins = f
+        .plugins
+        .into_iter()
+        .map(|(name, v)| Ok((name.clone(), project_plugin(&name, v)?)))
+        .collect::<Result<_>>()?;
+
     let mut project = Project {
         name,
         dir: ctx.project_dir.clone(),
@@ -379,9 +385,34 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         pods,
         services,
         volumes,
+        plugins,
     };
     finish(&mut project);
     Ok((project, warnings))
+}
+
+/// `plugins.<name>`: `enabled` (default true) and settings passed on to
+/// the plugin as they are.
+fn project_plugin(
+    name: &str,
+    v: Option<serde_norway::Value>,
+) -> Result<crate::plugin::ProjectPlugin> {
+    let err = |m: &str| Error::config(format!("plugins.{name}: {m}"));
+    let mut settings = match v.map(serde_json::to_value).transpose() {
+        Ok(None | Some(serde_json::Value::Null)) => serde_json::Map::new(),
+        Ok(Some(serde_json::Value::Object(m))) => m,
+        Ok(Some(_)) => return Err(err("must be a mapping")),
+        Err(e) => return Err(err(&e.to_string())),
+    };
+    let enabled = match settings.remove("enabled") {
+        None => true,
+        Some(serde_json::Value::Bool(b)) => b,
+        // Interpolation leaves strings.
+        Some(serde_json::Value::String(s)) if s == "true" => true,
+        Some(serde_json::Value::String(s)) if s == "false" => false,
+        Some(_) => return Err(err("enabled must be true or false")),
+    };
+    Ok(crate::plugin::ProjectPlugin { enabled, settings })
 }
 
 impl Service {

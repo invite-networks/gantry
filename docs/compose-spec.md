@@ -29,12 +29,30 @@ from the environment first, then from `.env` in the project directory (or
 | `pod` | **Extension.** The project's only pod, without a name: it takes the project's name (and so its hostname). Use `pod` or `pods`, not both. |
 | `services` | Containers. Each runs in exactly one pod. |
 | `volumes` | Named volumes, created in the service's engine as `<project>_<name>`. |
+| `plugins` | **Extension.** Per project plugin settings, see [plugins](#plugins-extension). |
 | `x-*` | Ignored, for anchors. |
 
 `--runtime` on the command line forces every service onto one runtime.
 
 A top-level `networks:` section is an error. Each pod defines its own
 interfaces (see below).
+
+## plugins (extension)
+
+Every plugin installed on the host runs for every project unless the
+project opts out. A `plugins.<name>` block turns one off or passes it
+settings:
+
+```yaml
+plugins:
+  nautobot:
+    enabled: false        # default true
+    tenant: acme          # every other key goes to the plugin as settings
+```
+
+A block for a plugin that is not installed is ignored, so one file works on
+hosts with and without it. Plugins are described in
+[docs/spec/plugins.md](spec/plugins.md).
 
 ## pods (extension)
 

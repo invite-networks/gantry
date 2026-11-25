@@ -50,6 +50,9 @@ pub struct Project {
     pub pods: IndexMap<String, Pod>,
     pub services: IndexMap<String, Service>,
     pub volumes: IndexMap<String, Volume>,
+    /// `plugins.<name>` blocks. A plugin without one is enabled.
+    #[serde(default)]
+    pub plugins: IndexMap<String, crate::plugin::ProjectPlugin>,
 }
 
 impl Project {

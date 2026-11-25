@@ -4,11 +4,14 @@ use crate::engine::exec::{RunRequest, oneoff_body};
 use crate::engine::spec::grace_secs;
 use crate::engine::{ContainerInfo, Engine, create_spec, hash_of};
 use crate::errors::{Context, Error, Result};
+use crate::plugin::{Hook, Plugins, Registry};
 use crate::pod::{self, Ensured, state};
 use crate::project::{DependsCondition, Project, PullPolicy, RuntimeKind, Service};
 use futures_util::future::try_join_all;
 use indexmap::{IndexMap, IndexSet};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
@@ -31,10 +34,17 @@ pub struct Orchestrator {
     /// Every runtime, sharing connections with `engines`, for finding
     /// containers that moved between runtimes.
     all: Vec<Engine>,
+    /// Installed plugins, started on the first hook that needs one.
+    pub plugins: Plugins,
 }
 
 impl Orchestrator {
     pub fn new(project: Project) -> Self {
+        Self::with_plugins(project, Arc::new(Registry::system()))
+    }
+
+    /// Like [`Orchestrator::new`], with the plugins to use.
+    pub fn with_plugins(project: Project, registry: Arc<Registry>) -> Self {
         let mut engines = BTreeMap::new();
         for s in project.services.values() {
             engines
@@ -48,11 +58,117 @@ impl Orchestrator {
             .into_iter()
             .map(|k| engines.get(&k).cloned().unwrap_or_else(|| Engine::new(k)))
             .collect();
+        let plugins = Plugins::new(registry, &project.name, project.plugins.clone());
         Self {
             project,
             engines,
             all,
+            plugins,
         }
+    }
+
+    /// Tells the plugins subscribed to `hook` about the project as it is
+    /// now. `extra` keys are added to the event data.
+    pub async fn notify(&self, hook: Hook, extra: Option<Value>) {
+        if !self.plugins.wants(hook) {
+            return;
+        }
+        let all = self.containers().await.unwrap_or_else(|e| {
+            tracing::warn!("plugins: list containers: {e}");
+            vec![]
+        });
+        let mut data = self.plugin_data(&all, None);
+        if let (Value::Object(d), Some(Value::Object(x))) = (&mut data, extra) {
+            d.extend(x);
+        }
+        self.plugins.emit(hook, &data).await;
+    }
+
+    /// What plugins are told: each pod with its interfaces and containers.
+    /// `state` replaces every pod and container state, as `down` does once
+    /// they are gone.
+    pub fn plugin_data(&self, all: &[(Engine, ContainerInfo)], state: Option<&str>) -> Value {
+        let p = &self.project;
+        let pods: Vec<Value> = p
+            .pods
+            .values()
+            .map(|pod| {
+                let st = state::PodState::load(&p.name, &pod.name).ok().flatten();
+                let interfaces: Vec<Value> = pod
+                    .attachments
+                    .iter()
+                    .map(|a| {
+                        let live = st
+                            .as_ref()
+                            .and_then(|s| s.interfaces.iter().find(|i| i.ifname == a.ifname));
+                        let configured = match &a.addressing {
+                            crate::project::Addressing::Static(v) => v.clone(),
+                            crate::project::Addressing::Dhcp => vec![],
+                        };
+                        let addresses = live.map_or(configured, |i| i.addresses.clone());
+                        json!({
+                            "name": a.ifname,
+                            "parent": a.parent,
+                            "driver": a.driver,
+                            "dhcp": matches!(a.addressing, crate::project::Addressing::Dhcp),
+                            "addresses": addresses,
+                            "gateway": live.and_then(|i| i.gateway).or(a.gateway),
+                            "gateway6": a.gateway6,
+                            "default_route": a.default_route,
+                            "mac": live.and_then(|i| i.mac.clone()),
+                        })
+                    })
+                    .collect();
+                let containers: Vec<Value> = all
+                    .iter()
+                    .filter(|(_, c)| c.project == p.name && !c.oneoff && c.pod == pod.name)
+                    .map(|(e, c)| {
+                        let svc = p.services.get(&c.service);
+                        json!({
+                            "service": c.service,
+                            "name": c.name,
+                            "id": c.id,
+                            "engine": e.kind.as_str(),
+                            "image": c.image,
+                            "state": state.unwrap_or(&c.status),
+                            "health": c.health,
+                            "restart": svc.and_then(|s| s.restart.clone()),
+                            "command": svc.and_then(|s| s.command.clone()),
+                            "cpus": svc.and_then(|s| s.cpus),
+                            "mem_limit": svc.and_then(|s| s.mem_limit),
+                            "labels": svc.map(|s| s.labels.clone()).unwrap_or_default(),
+                            "volumes": c.mounts.iter().map(|m| json!({
+                                "type": m.kind,
+                                "name": m.name,
+                                "source": m.source,
+                                "target": m.destination,
+                            })).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+                let pod_state =
+                    state.unwrap_or(if containers.iter().any(|c| c["state"] == "running") {
+                        "running"
+                    } else if st.is_some() {
+                        "created"
+                    } else {
+                        "down"
+                    });
+                json!({
+                    "name": pod.name,
+                    "netns": state::netns_name(&p.name, &pod.name),
+                    "hostname": pod.hostname,
+                    "state": pod_state,
+                    "interfaces": interfaces,
+                    "containers": containers,
+                })
+            })
+            .collect();
+        json!({
+            "project": p.name,
+            "dir": p.dir,
+            "pods": pods,
+        })
     }
 
     pub fn engine(&self, kind: RuntimeKind) -> &Engine {
@@ -198,7 +314,10 @@ impl Orchestrator {
         guard_project_name(&self.project)?;
         guard_addresses(&self.project)?;
         crate::datamove::refuse_unmoved(self, &order).await?;
-        self.up_locked(opts).await
+        self.notify(Hook::PreUp, None).await;
+        self.up_locked(opts).await?;
+        self.notify(Hook::PostUp, None).await;
+        Ok(())
     }
 
     /// `up` for a caller that already holds the project lock and has done
@@ -653,6 +772,16 @@ impl Orchestrator {
     pub async fn down(&self, volumes: bool, timeout: Option<u64>) -> Result<()> {
         let _lock = lock(&self.project.name)?;
         let containers = self.containers().await?;
+        // Pod state is gone once down finishes, so post_down's data is
+        // taken now.
+        let gone = self
+            .plugins
+            .wants(Hook::PostDown)
+            .then(|| self.plugin_data(&containers, Some("down")));
+        if self.plugins.wants(Hook::PreDown) {
+            let data = self.plugin_data(&containers, None);
+            self.plugins.emit(Hook::PreDown, &data).await;
+        }
         // Reverse dependency levels; containers of unknown services first.
         let order = self.start_order(&[]).unwrap_or_default();
         let mut groups: Vec<Vec<String>> = self.levels(&order);
@@ -711,10 +840,33 @@ impl Orchestrator {
         let _ = std::fs::remove_file(Project::snapshot_path(&self.project.name));
         let _ = std::fs::remove_dir(dir.join("pods"));
         let _ = std::fs::remove_dir(&dir);
+        if let Some(data) = gone {
+            self.plugins.emit(Hook::PostDown, &data).await;
+        }
         Ok(())
     }
 
     pub async fn stop(&self, services: &[String], timeout: Option<u64>) -> Result<()> {
+        self.stop_services(services, timeout).await?;
+        self.notify(Hook::PostStop, None).await;
+        Ok(())
+    }
+
+    pub async fn start(&self, services: &[String]) -> Result<()> {
+        self.start_services(services).await?;
+        self.notify(Hook::PostStart, None).await;
+        Ok(())
+    }
+
+    /// Stops then starts the services; plugins hear one `post_restart`.
+    pub async fn restart(&self, services: &[String], timeout: Option<u64>) -> Result<()> {
+        self.stop_services(services, timeout).await?;
+        self.start_services(services).await?;
+        self.notify(Hook::PostRestart, None).await;
+        Ok(())
+    }
+
+    async fn stop_services(&self, services: &[String], timeout: Option<u64>) -> Result<()> {
         let mut order = self.start_order(services)?;
         if !services.is_empty() {
             order.retain(|s| services.contains(s));
@@ -744,7 +896,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    pub async fn start(&self, services: &[String]) -> Result<()> {
+    async fn start_services(&self, services: &[String]) -> Result<()> {
         let mut order = self.start_order(services)?;
         if !services.is_empty() {
             order.retain(|s| services.contains(s));
@@ -905,4 +1057,20 @@ pub fn lock(project: &str) -> Result<Lock> {
         ))),
         Err((_, e)) => Err(e).ctx(|| format!("lock {}", path.display())),
     }
+}
+
+/// Tells plugins that the health watcher restarted a container, with the
+/// project as `up` last recorded it.
+pub async fn notify_heal_restart(action: crate::heal::HealAction) {
+    let project = match Project::load_snapshot(&action.project) {
+        Ok(Some(p)) => p,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!("plugins: heal_restart: {}: {e}", action.project);
+            return;
+        }
+    };
+    let o = Orchestrator::new(project);
+    o.notify(Hook::HealRestart, Some(json!({ "heal": action })))
+        .await;
 }

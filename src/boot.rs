@@ -192,6 +192,9 @@ pub async fn start(wait_timeout: Duration) -> usize {
                         build: false,
                     })
                     .await;
+                if r.is_ok() {
+                    p.orch.notify(crate::plugin::Hook::Boot, None).await;
+                }
                 (p.name.clone(), r)
             }
         }))

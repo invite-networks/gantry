@@ -4,9 +4,9 @@
 #
 #   sudo GT_PARENT=vlan4 GT_PREFIX=29 GT_GATEWAY=192.0.2.222 \
 #        GT_IP1=192.0.2.217 GT_IP2=192.0.2.218 GT_IP3=192.0.2.219 \
-#        tests/integration/run.sh [docker] [kiri] [dhcp] [dhcpmove] [ipv6] [heal]
+#        tests/integration/run.sh [docker] [kiri] [dhcp] [dhcpmove] [ipv6] [heal] [plugins]
 #
-# With no arguments it runs docker, dhcp and heal. The dhcp scenario uses
+# With no arguments it runs docker, dhcp, heal and plugins. The dhcp scenario uses
 # an isolated bridge (tests/integration/dhcp-lab.sh) and needs dnsmasq. To
 # lease from a real network's DHCP server instead, set GT_DHCP_PARENT to
 # the parent interface and GT_DHCP_GATEWAY to the gateway the lease hands
@@ -14,6 +14,8 @@
 # dhcpmove moves the lab's DHCP pool under a running pod (about a minute).
 # heal runs the health watcher on Docker and kiri (GT_HEAL_RUNTIMES) with
 # loopback-only pods, so it needs no addresses (about a minute each).
+# plugins drives a recording plugin through up, stop, start, restart and
+# down with a loopback-only pod (debug builds only: it uses GANTRY_PLUGIN_DIR).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 pass=0
@@ -196,11 +198,42 @@ heal() {
   [ -n "$unit_was_active" ] && systemctl start gantry-supervise.service
 }
 
-targets=${*:-docker dhcp heal}
+plugins() {
+  echo "== plugins"
+  # Plugins must be owned by root, so the recorder runs from a copy.
+  pd=$(mktemp -d)
+  cp -r "$here/plugins/recorder" "$pd/"
+  chown -R root:root "$pd" && chmod -R go-w "$pd"
+  export GANTRY_PLUGIN_DIR=$pd GANTRY_RUNTIME=docker
+  K="gantry -f $here/plugins/gantry.yaml"
+  got=$pd/recorder/got
+  hook() { grep "\"hook\":\"$1\"" "$got"; }
+  $K down >/dev/null 2>&1; rm -f "$got"
+  check "up with a plugin installed" $K up -d
+  check "plugin got hello, pre_up and post_up" sh -c "grep -q '\"type\":\"hello\"' $got && grep -q '\"hook\":\"pre_up\"' $got && grep -q '\"hook\":\"post_up\"' $got"
+  check "post_up lists the running container" sh -c "grep '\"hook\":\"post_up\"' $got | grep -q '\"name\":\"gtplug-app-1\".*\"state\":\"running\"'"
+  check "project settings reach the plugin" sh -c "grep '\"hook\":\"post_up\"' $got | grep -q '\"tenant\":\"acme\"'"
+  check_not "a hook it did not subscribe to is not sent" grep -q '"hook":"pre_down"' "$got"
+  $K stop >/dev/null 2>&1; $K start >/dev/null 2>&1; $K restart >/dev/null 2>&1
+  check "stop and start each told once" sh -c "[ \$(grep -c '\"hook\":\"post_stop\"' $got) = 1 ] && [ \$(grep -c '\"hook\":\"post_start\"' $got) = 1 ]"
+  check "restart is one post_restart" sh -c "[ \$(grep -c '\"hook\":\"post_restart\"' $got) = 1 ]"
+  $K down >/dev/null 2>&1
+  sleep 1 # post_down is async
+  check "post_down arrives async with state down" sh -c "grep '\"hook\":\"post_down\"' $got | grep '\"mode\":\"async\"' | grep -q '\"state\":\"down\"'"
+  rm -f "$got"
+  GT_PLUGIN_ENABLED=false $K up -d >/dev/null 2>&1
+  check_not "a project that opts out starts no plugin" test -e "$got"
+  GT_PLUGIN_ENABLED=false $K down >/dev/null 2>&1
+  rm -rf "$pd"
+  unset GANTRY_PLUGIN_DIR GANTRY_RUNTIME
+}
+
+targets=${*:-docker dhcp heal plugins}
 for t in $targets; do
   case $t in
     docker|kiri) e2e "$t" ;;
     heal) heal ;;
+    plugins) plugins ;;
     dhcp) dhcp ;;
     dhcpmove) dhcpmove ;;
     ipv6) ipv6 ;;

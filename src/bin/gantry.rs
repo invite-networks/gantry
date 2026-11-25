@@ -834,9 +834,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Restart { timeout, services } => {
             require_root()?;
-            let o = load_project(&g)?;
-            o.stop(&services, timeout).await?;
-            o.start(&services).await?;
+            load_project(&g)?.restart(&services, timeout).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Pull { services } => {

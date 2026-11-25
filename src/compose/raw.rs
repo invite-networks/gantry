@@ -66,6 +66,9 @@ pub struct File {
     pub networks: Option<Value>,
     #[serde(default)]
     pub volumes: IndexMap<String, Option<VolumeDef>>,
+    /// Extension: per project plugin settings, `plugins.<name>`.
+    #[serde(default)]
+    pub plugins: IndexMap<String, Option<Value>>,
     #[serde(flatten)]
     pub extra: IndexMap<String, Value>,
 }

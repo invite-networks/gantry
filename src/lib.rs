@@ -25,7 +25,8 @@ pub use errors::{Error, Result};
 /// Features this build supports, printed by `gantry version`. Callers
 /// such as gantry-agent check for a name here rather than comparing
 /// version numbers.
-pub const FEATURES: &[&str] = &["health_on_failure", "supervise"];
+pub const FEATURES: &[&str] = &["health_on_failure", "supervise", "plugins"];
 pub mod engine;
 pub mod oci;
 pub mod orchestrator;
+pub mod plugin;
