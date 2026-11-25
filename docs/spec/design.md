@@ -56,7 +56,8 @@ to start containers inside namespaces that already exist.
 | Engine | `src/engine/` | `mod.rs`: one client per runtime over the Docker Engine API (bollard), socket selection, container, image, volume and log operations. `spec.rs`: the create body for a service in its pod. `exec.rs`: exec with TTY and resize. `auth.rs`: registry credentials. `build.rs`: image builds through the engine CLI. |
 | OCI shim | `src/oci.rs`, `src/bin/gantry-oci.rs` | Parses the runtime invocation, rewrites the bundle's `config.json` from annotations, execs the real runtime. |
 | Health watcher | `src/heal.rs` | `watch`: acts on unhealthy containers that set `health_on_failure`; restart backoff, host lock, action reports (section 6.2). |
-| Orchestrator | `src/orchestrator.rs` | `up`, `down`, `start`, `stop`, dependency ordering, waiting on conditions, the per-project lock. |
+| Orchestrator | `src/orchestrator.rs` | `up`, `down`, `start`, `stop`, `restart`, dependency ordering, waiting on conditions, the per-project lock, plugin event data and address allocation. |
+| Plugins | `src/plugin.rs` | Manifest discovery and host overrides (`Registry`), starting plugins and the JSON lines protocol (`Plugins`), hooks and `allocate` (section 6.9). |
 | Errors | `src/errors.rs` | One `thiserror` enum grouped by layer: Config, Io, Sys, Engine, Network, Firewall, Dhcp, State. |
 | Utilities | `src/util.rs` | Atomic and in-place writes, hashing. |
 
@@ -371,6 +372,48 @@ and `up --build` builds before starting [FR-CLI-11]; plain `up` builds only
 images that are missing. The CLI is needed only on hosts with projects that
 use `build:`.
 
+### 6.9 Plugins
+
+Plugins are separate programs, in any language, that gantry tells about
+lifecycle events and asks for pod addresses. The reference is
+[plugins.md](plugins.md); this section covers how it is built.
+
+* **Discovery.** Each `Orchestrator` holds a `Plugins` built from the
+  `Registry`, which reads `plugin.toml` files and `/etc/gantry/plugins.toml`
+  once per command: a host without plugins costs two failed directory
+  reads [FR-PLUG-01]. Ownership is checked on the manifest and again on the
+  program before it starts.
+* **Start on demand.** `Orchestrator::notify(hook)` returns at once unless
+  an enabled plugin subscribed to the hook, so no event data is built and
+  no process starts otherwise. The first event for a plugin starts it with
+  `setsid`, a cleared environment and stderr in its log file, and sends
+  `hello` [FR-PLUG-02, FR-PLUG-03].
+* **Threads, not async I/O.** Each plugin gets a writer thread, a reader
+  thread and a reaper. The writer blocks SIGPIPE on its own thread only:
+  the CLI keeps SIGPIPE's default action for `gantry ps | head`, and a
+  write to an exited plugin from any other thread would kill gantry. The
+  reader routes answers to waiting requests by `id` and fails them all
+  when stdout closes. The reaper waits on the child so `supervise` leaves
+  no zombies [FR-PLUG-08].
+* **Sync and async.** A sync event waits for its answer within the hook
+  timeout. An async event waits only until its line is in the pipe, so it
+  is not lost when gantry exits right after; dropping `Plugins` closes
+  stdin and the plugin, in its own session, finishes on its own
+  [FR-PLUG-05].
+* **Where hooks fire.** `up` sends `pre_up` after its guards and `post_up`
+  after every service is up. `down` builds `post_down`'s data before
+  removing anything, since pod state is gone afterwards. `restart` is its
+  own method so it sends one `post_restart`. `boot` follows each project's
+  successful `up`. The health watcher sends `heal_restart` from a spawned
+  task built from the project snapshot, so it never delays the watcher
+  [FR-PLUG-04].
+* **Addresses.** `ensure_pods` asks the plugin only when
+  `pod::needs_create` says the pod will be built. It fills the address
+  into a copy of the pod and calls `pod::ensure_hashed` with the hash of
+  the pod as written, so the next `up` compares like with like and keeps
+  the pod. Hosts files and firewalls already read live addresses from pod
+  state, as for DHCP, so nothing else changes [FR-ADDR-07].
+
 ## 7. Data flows
 
 ### 7.1 `gantry up`
@@ -380,10 +423,12 @@ CLI          load + normalize project, take --runtime
 Orchestrator start order from depends_on (topological, selected services + deps)
 Engine       ping every engine the selected services use       [FR-RT-12]
 Orchestrator take /run/gantry/<project>/lock (flock)          [FR-CLI-09]
+Plugins      pre_up                                            [FR-PLUG-04]
 Engine       build images with build: (if missing or --build), pull others
              (pull policy), all concurrently; ensure named volumes
 for each pod used:
   Orchestrator if pod hash changed or netns gone: remove its containers
+  Plugins      if the pod will be created and an entry has from:, allocate
   Pod          ensure: reuse, or create (netns, uts, ipc, links, addresses
                or DHCP agent, files, state.json)
 Project      save snapshot to /run/gantry/<project>/project.json
@@ -394,6 +439,7 @@ for each dependency level, services in the level concurrently:
   Engine       inspect; reuse if hash matches (start if stopped),
                else stop, remove, create, start
 if --wait: wait for running or healthy
+Plugins      post_up
 if not -d: follow logs; on interrupt stop services, keep pods      [FR-CLI-03]
 ```
 
@@ -405,12 +451,14 @@ leaves nothing half started.
 ```
 Orchestrator take the project lock
 Engine       list containers labeled io.gantry.project=<project> on every engine
+Plugins      pre_down; build post_down's data (every pod and container down)
 Engine       stop (grace period or -t) and remove, one dependency level at a
              time in reverse order, each level concurrently
 for each pod with state or a pinned netns:
   Pod        stop DHCP agents (release leases), remove netns, uts, ipc, pod dir
 if -v: remove non-external named volumes on every engine
 Orchestrator remove lock, snapshot and project directory
+Plugins      post_down
 ```
 
 ### 7.3 DHCP address change
@@ -455,12 +503,13 @@ reboot, by design.
 
 | Boundary | Trust |
 |---|---|
-| Operator to Gantry | The operator is root. The project file is trusted to describe intent but is still validated, because its values reach the kernel, nftables and files that containers read. |
+| Operator to Gantry | The operator is root, or a member of the `gantry` group, which sudo makes root [NFR-SEC-12]. The project file is trusted to describe intent but is still validated, because its values reach the kernel, nftables and files that containers read. |
 | Gantry to engines | Engine sockets are root-equivalent. Gantry connects only to fixed root-owned socket paths. |
 | dockerd to `gantry-oci` | The shim runs as root under dockerd. Annotations on a container are treated as untrusted input, since any Docker API user can set them. |
 | Containers to host | Containers share only the pod namespaces. The PID namespace is never shared. `/etc` files are read only. |
 | LAN to pod | Governed by the pod firewall. Without one, the pod is open (an accepted assumption). |
 | DHCP server to pod | Lease contents are untrusted and validated before use. |
+| Gantry to plugins | Plugins run as root and are trusted like gantry itself, so they must be root owned and not writable by others [FR-PLUG-01]. Their answers are still validated: an allocated address must be usable and free on the host [FR-ADDR-07]. They never receive environment variables or credentials [FR-PLUG-06]. |
 
 ### 9.2 Controls
 
@@ -486,10 +535,13 @@ reboot, by design.
 ### 9.3 Known risks
 
 * `GANTRY_*` environment overrides (run directory, engine sockets) are read
-  by a root process. sudo's default `env_reset` strips them, but a sudoers
-  rule that keeps the environment would let a caller redirect them.
-  `GANTRY_NFT` is already limited to debug builds [NFR-SEC-10]; the others
-  remain an open item.
+  by a root process. sudo's default `env_reset` strips them. The `gantry`
+  group's rule keeps the environment on purpose, which is acceptable only
+  because membership is already equivalent to root; no narrower rule may
+  keep it. `GANTRY_NFT` and `GANTRY_PLUGIN_DIR` are limited to debug builds
+  [NFR-SEC-10, NFR-SEC-13]; the others remain an open item.
+* A plugin can stall `up` for its sync hook timeouts, and an address
+  plugin can stop `up` entirely; both are by design.
 * A pod without `firewall:` is reachable from the whole LAN.
 
 ## 10. Failure handling

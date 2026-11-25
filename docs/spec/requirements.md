@@ -107,12 +107,13 @@ Priority: **M** must, **S** should, **C** could.
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-ADDR-01 | Every pod network entry shall have `address:`, either an IPv4 address with prefix length or `dhcp`, plus an optional static `address6:`. Gantry shall never pick LAN addresses on its own. | M |
+| FR-ADDR-01 | Every pod network entry shall have `address:`: an IPv4 address with prefix length, `dhcp`, or `{ from: <plugin>, ... }` (FR-ADDR-07), plus an optional static `address6:` with the first form. Gantry shall never pick LAN addresses on its own. | M |
 | FR-ADDR-02 | An address without a prefix length, or that is its subnet's network, broadcast or gateway address, shall be rejected with an error that says so. | M |
 | FR-ADDR-03 | With `address: dhcp` Gantry shall acquire an IPv4 lease with a DHCP client that runs inside the pod namespace, sends a client identifier, and applies the address, default route, DNS servers and domain from the lease. | M |
 | FR-ADDR-04 | The DHCP client shall renew at T1, rebind at T2, drop the address at expiry and reacquire, and release the lease when the pod is removed. | M |
 | FR-ADDR-05 | When a DHCP pod's address changes, Gantry shall refresh every pod's hosts file and firewall in the project. | S |
 | FR-ADDR-06 | Lease values (address, mask, domain name) shall be validated before they are applied or written to `/etc/resolv.conf`. | M |
+| FR-ADDR-07 | With `address: { from: <name>, ... }` Gantry shall ask the plugin that provides `<name>` for an IPv4 address and optional gateway only when it creates the pod, passing the other keys, the network entry and any previous address. A compose `gateway:` wins over the plugin's. An unusable reply, an address another pod on the host holds, or any plugin failure shall fail `up` before the pod exists. A repeated `up` with the same configuration shall keep the pod and its address without asking. | M |
 
 ### 5.4 Names and shared files
 
@@ -169,6 +170,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CMP-06 | Labels under `io.gantry.` shall be reserved and rejected in project files. | M |
 | FR-CMP-07 | Named volumes shall be created in the service's engine as `<project>_<name>` unless external. | M |
 | FR-CMP-08 | The project name shall come from `name:`, `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. | M |
+| FR-CMP-10 | A service without `cpus` shall get 1 CPU and one without `mem_limit` 2 GiB. `0` shall mean no limit. A negative `cpus` shall be an error. | M |
 | FR-CMP-09 | `build:` shall be supported (context, Dockerfile, args, target and the other Compose build keys) by running `docker build` for Docker services, so BuildKit, `.dockerignore` and build secrets behave as with Compose. For kiri services, the image is built with `docker build` against the kiri socket using the classic builder. | M |
 
 ### 5.8 Command line
@@ -192,6 +194,8 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CLI-15 | `completion <shell>` shall print shell completions; the package shall install completions for bash, zsh and fish and a man page. | S |
 | FR-CLI-17 | `data move` shall find every bind or volume mount whose running source differs from the project file, copy it to the new host path with rsync (`-aHAX --numeric-ids --sparse --delete`) in live passes, stop only the services that use it, run a final pass and a checksum verification, and recreate the services. It shall never delete the old data, refuse a destination that holds other data unless `--force`, and restart the services on the old data if the cutover fails. | S |
 | FR-CLI-18 | `up` shall refuse to recreate a service onto a new data path that is empty, or holds an unfinished move, while the old path has data. | M |
+| FR-CLI-19 | When the installed `/usr/bin/gantry` runs as a non-root member of the `gantry` group, it shall run itself again through `sudo -n` with the same arguments and working directory, except for `completion` and `internal` helpers. A non-member without root shall be told to run it as root or join the group. | M |
+| FR-CLI-20 | `plugin ls` shall list installed plugins, their hooks and modes, the address source they provide, and whether each is enabled on the host and for the project in the current directory. | S |
 | FR-CLI-16 | Services in the same dependency level shall be created and started in parallel; `down` and `stop` shall act on reverse levels in parallel; pulls shall run in parallel. | M |
 
 ### 5.9 State and lifecycle
@@ -222,6 +226,19 @@ Priority: **M** must, **S** should, **C** could.
 | FR-HEAL-10 | `gantry supervise` shall run the watcher for Docker and kiri until SIGTERM or SIGINT. The package shall install `gantry-supervise.service`, enable it on first install, and keep it disabled across upgrades once an operator or gantry-agent disables it. | M |
 | FR-HEAL-11 | `gantry version` shall list the features of the build, including `health_on_failure` and `supervise`, and the library shall export the same list. | S |
 
+### 5.11 Plugins
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-PLUG-01 | Gantry shall find plugins as `<dir>/<name>/plugin.toml` under `/usr/local/lib/gantry/plugins` then `/usr/lib/gantry/plugins`, the first manifest with a name winning. A manifest with another `api`, a missing `exec`, an unknown hook, a bad name, or a file not owned by root (or the running user) or writable by group or others shall be skipped with a warning. | M |
+| FR-PLUG-02 | A plugin shall be started only when a command reaches a hook it subscribed to, at most once per command, in its own session, with its directory as working directory and only `PATH`, `LANG`, `LC_ALL`, `GANTRY_PLUGIN_NAME` and `GANTRY_PLUGIN_CONFIG` in its environment. Its stderr shall be appended to `/var/log/gantry/plugins/<name>.log`. | M |
+| FR-PLUG-03 | Gantry shall speak JSON lines on the plugin's stdin and stdout: `hello` first (API version, gantry version, host, project, lock file), then `event` and `allocate` messages. Sync events and `allocate` carry an `id` and a `deadline_ms`; answers carry the `id` and `ok`, with `result` or `error`. | M |
+| FR-PLUG-04 | Hooks shall be `pre_up`, `post_up`, `pre_down`, `post_down`, `post_start`, `post_stop`, `post_restart`, `heal_restart` and `boot`. `restart` shall send one `post_restart` and no `post_stop` or `post_start`. | M |
+| FR-PLUG-05 | Each hook shall be `sync` (wait for the answer up to its timeout) or `async` (return once the message is written), as the manifest says unless `/etc/gantry/plugins.toml` overrides it on the host. Hooks shall fail open: a missing, crashing, slow or failing plugin is a warning and never changes the command's result. | M |
+| FR-PLUG-06 | Event data shall describe each pod (name, netns, hostname, state, interfaces with parent, driver, addresses, gateway and MAC) and its containers (service, name, ID, engine, image, state, health, restart, command, limits, labels, mounts), plus the project's `plugins.<name>` settings. Environment variables and credentials shall never be sent. `post_down` shall report every pod and container as `down`. | M |
+| FR-PLUG-07 | Every installed plugin shall run for every project unless the host config disables it or the project sets `plugins.<name>.enabled: false`. A `plugins:` block for a plugin that is not installed shall be ignored. | M |
+| FR-PLUG-08 | A plugin that exits early shall never stop gantry: writes to it shall not raise SIGPIPE in gantry, and pending requests shall fail as soon as its stdout closes. | M |
+
 ## 6. Non-functional requirements
 
 ### 6.1 Platform
@@ -247,6 +264,8 @@ Priority: **M** must, **S** should, **C** could.
 | NFR-SEC-08 | Random identifiers shall come from the operating system's random source. |
 | NFR-SEC-09 | Dependencies shall pass `cargo audit` and `cargo deny` in CI. |
 | NFR-SEC-10 | The `GANTRY_NFT` binary override shall be honored only in debug builds. Release builds always run `nft` from `PATH`. |
+| NFR-SEC-12 | `/etc/sudoers.d/gantry` shall grant members of the `gantry` group `/usr/bin/gantry` as root without a password and with their environment, and shall exclude the `gantry` remote control account from that rule. Documentation shall state that membership is equivalent to root. | M |
+| NFR-SEC-13 | The `GANTRY_PLUGIN_DIR` search override shall be honored only in debug builds. | M |
 | NFR-SEC-11 | A helper shall run the gantry binary that is running, when that binary is named `gantry`, and otherwise `/usr/bin/gantry`. Neither configuration nor the environment shall choose the helper binary. |
 
 ### 6.3 Performance
@@ -304,6 +323,7 @@ A release is acceptable when:
 2. Unit tests, format, clippy with warnings denied, `cargo audit` and
    `cargo deny` pass in CI.
 3. The live integration suite passes on the reference platform for Docker,
-   kiri, DHCP, ipvlan and self-healing, using the API-based engine layer.
+   kiri, DHCP, ipvlan, self-healing and plugins, using the API-based
+   engine layer.
 4. The runbooks have been executed on a test host by someone other than
    their author.

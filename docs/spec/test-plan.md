@@ -113,8 +113,15 @@ the release.
 
 Needs root, `gantry` on `PATH`, the engines under test, and three free
 addresses on a parent interface (except `heal`, which uses loopback-only
-pods). Scenarios are arguments; with none it runs `docker dhcp heal`.
-Further scenarios: `kiri`, `dhcpmove`, `ipv6`.
+pods). Scenarios are arguments; with none it runs `docker dhcp heal
+plugins`. Further scenarios: `kiri`, `dhcpmove`, `ipv6`.
+
+`plugins` needs a debug build (it installs a recording plugin through
+`GANTRY_PLUGIN_DIR`). It drives the plugin through `up`, `stop`, `start`,
+`restart` and `down` with a loopback-only pod, checks a project that opts
+out starts no plugin, and, when `GT_IP1` is set, has the plugin allocate a
+pod's address on the parent: the pod gets it, a second `up` does not ask
+again, and a refusal fails `up` with the plugin's message and no pod.
 
 ```sh
 sudo tests/integration/dhcp-lab.sh up
@@ -322,6 +329,18 @@ candidates for new tests.
 | NFR-SEC-10 | Planned unit test (3.2) |
 | NFR-SEC-11 | `helper_runs_gantry_not_the_library_caller` |
 | NFR-REL-05 | dhcp scenario (agent scope checks), `agent_unit_is_a_valid_scope_name` |
+| FR-ADDR-07 | `plugin_addresses`, `allocation_tests::replies`, plugins scenario (allocation checks) |
+| FR-CMP-10 | `resource_limit_defaults` |
+| FR-CLI-19, NFR-SEC-12 | `tests/packaging/remote.sh` (gantry group checks: member elevates, keeps environment, cannot sudo other commands; non-member refused and told about the group; remote account still refused) |
+| FR-CLI-20 | Review |
+| FR-PLUG-01 | `manifests_and_overrides`, `writable_manifest_is_refused` |
+| FR-PLUG-02, FR-PLUG-03 | `sync_and_async_events_reach_the_plugin`, plugins scenario (hello) |
+| FR-PLUG-04 | plugins scenario (each hook once; restart is one `post_restart`); `heal_restart` and `boot` by review |
+| FR-PLUG-05 | `failures_are_warnings_but_allocation_fails`, `manifests_and_overrides` (host mode override) |
+| FR-PLUG-06 | plugins scenario (container and settings in `post_up`, `post_down` state) |
+| FR-PLUG-07 | `disabled_plugins_are_never_started`, plugins scenario (opt-out) |
+| FR-PLUG-08 | `failures_are_warnings_but_allocation_fails` (plugin that exits at once) |
+| NFR-SEC-13 | Review |
 
 ## 8. Release gate
 
