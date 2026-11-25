@@ -582,11 +582,44 @@ fn pod_networks(pod: &str, raw: Vec<raw::PodNetwork>) -> Result<Vec<Attachment>>
             s.parse::<IpAddr>()
                 .map_err(|_| err(format!("invalid {what} {s:?}")))
         };
-        let address = n.address.as_deref().ok_or_else(|| {
-            err("address is required: an address with prefix (10.10.10.10/24) or dhcp".into())
-        })?;
         let mut gateway = None;
-        let addressing = if address == "dhcp" {
+        let address = match &n.address {
+            Some(raw::Address::Text(a)) => a.as_str(),
+            Some(raw::Address::Plugin(_)) => "",
+            None => {
+                return Err(err(
+                    "address is required: an address with prefix (10.10.10.10/24), dhcp, or { from: <plugin> }".into(),
+                ));
+            }
+        };
+        let addressing = if let Some(raw::Address::Plugin(m)) = &n.address {
+            if n.address6.is_some() || n.gateway6.is_some() {
+                return Err(err(
+                    "address6 together with address: { from: ... } is not supported yet".into(),
+                ));
+            }
+            let mut from = None;
+            let mut options = serde_json::Map::new();
+            for (k, v) in m {
+                let v = serde_json::to_value(v).map_err(|e| err(format!("address.{k}: {e}")))?;
+                if k == "from" {
+                    from = v.as_str().filter(|f| !f.is_empty()).map(String::from);
+                } else {
+                    options.insert(k.clone(), v);
+                }
+            }
+            let from = from.ok_or_else(|| {
+                err("address: { ... } needs from, the plugin that allocates the address".into())
+            })?;
+            gateway = match &n.gateway {
+                Some(g) => match parse_ip(g, "gateway")? {
+                    g @ IpAddr::V4(_) => Some(g),
+                    g => return Err(err(format!("gateway {g} must be IPv4"))),
+                },
+                None => None,
+            };
+            Addressing::Plugin { from, options }
+        } else if address == "dhcp" {
             if n.gateway.is_some() {
                 return Err(err(
                     "gateway comes from the DHCP lease; remove gateway:".into()
@@ -665,8 +698,8 @@ fn pod_networks(pod: &str, raw: Vec<raw::PodNetwork>) -> Result<Vec<Attachment>>
                 }
                 Some(g)
             }
-            // Rejected above for DHCP entries.
-            (Some(_), Addressing::Dhcp) => None,
+            // Rejected above for DHCP and plugin entries.
+            (Some(_), Addressing::Dhcp | Addressing::Plugin { .. }) => None,
         };
         let mac = n
             .mac_address
@@ -1714,6 +1747,39 @@ mod tests {
         assert_eq!(b.ifname, "mgmt");
         assert_eq!(b.addressing, Addressing::Dhcp);
         assert!(b.default_route);
+    }
+
+    #[test]
+    fn plugin_addresses() {
+        let p = try_load(
+            "name: t\npods:\n  p:\n    network:\n      - { parent: eth9, address: { from: nautobot, prefix: 192.0.2.216/29 }, gateway: 192.0.2.222 }\nservices: {}\n",
+        )
+        .unwrap();
+        let a = &p.pods["p"].attachments[0];
+        let Addressing::Plugin { from, options } = &a.addressing else {
+            panic!("plugin addressing")
+        };
+        assert_eq!(from, "nautobot");
+        assert_eq!(options["prefix"], "192.0.2.216/29");
+        assert_eq!(a.gateway, Some("192.0.2.222".parse().unwrap()));
+        for (bad, why) in [
+            ("address: { prefix: 192.0.2.216/29 }", "needs from"),
+            (
+                "address: { from: nb }, address6: '2001:db8::5/64'",
+                "not supported",
+            ),
+            (
+                "address: { from: nb }, gateway: '2001:db8::1'",
+                "must be IPv4",
+            ),
+        ] {
+            let e = try_load(&format!(
+                "name: t\npods:\n  p:\n    network:\n      - {{ parent: eth9, {bad} }}\nservices: {{}}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
     }
 
     #[test]

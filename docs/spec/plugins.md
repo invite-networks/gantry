@@ -1,7 +1,7 @@
 # Plugins and Group Access (proposal)
 
-Status: proposal for review. Once accepted, the requirements, design and test
-plan pick up their parts and this file becomes the plugin reference.
+Status: accepted 2026-11-25; phases 1 to 3 are built. The requirements,
+design and test plan pick up their parts as each ships.
 
 ## Goals
 
@@ -177,24 +177,42 @@ error, so one compose file works on hosts with and without it.
 ## Addresses
 
 `address: { from: <name>, ... }` asks the plugin whose manifest declares
-`[address] from = "<name>"` for the address. Every key besides `from` goes to
-the plugin untouched, together with the rest of the network entry (`parent`,
-`driver`, `gateway`, `interface`, `default_route`, `address6`, `gateway6`),
-the project, the pod and the `plugins.<name>` settings.
+`[address] from = "<name>"` for the address. `address6` and `gateway6` are
+not supported with it yet. `gateway` may be set and must be IPv4.
 
-- Gantry asks only when it creates the pod. A pod whose configuration did not
-  change keeps the address recorded in its state, so a repeated `up` makes
-  no call.
-- The reply sets `address` and may set `gateway`. A gateway in the compose
-  file wins over the plugin's.
-- This call fails closed. If the plugin is missing or disabled, errors or
-  times out, the pod is not created and `up` fails with the plugin's
-  message.
-- `guard_addresses` skips static conflict checks for these entries. The
-  plugin owns uniqueness.
-- `gantry config` prints `from: nautobot` and, once the pod exists, the
-  address it was given.
-- The off-Linux parser used by gantry-server must accept the map form.
+Gantry sends `allocate` only when it creates the pod: the first `up`, or
+after the pod's configuration changed or its namespace was lost. A pod whose
+configuration did not change keeps the address recorded in its state, so a
+repeated `up` makes no call.
+
+```json
+{
+  "project": "shop",
+  "pod": "web",
+  "hostname": "web",
+  "interface": { "name": "eth0", "parent": "vlan4", "driver": "macvlan",
+                 "gateway": "192.0.2.222", "default_route": true, "mac": null },
+  "address": { "from": "nautobot", "prefix": "192.0.2.216/29" },
+  "previous": ["192.0.2.218/29"],
+  "settings": { "tenant": "acme" }
+}
+```
+
+`address` is the compose map as written. `previous` is the address the pod
+had before it was recreated, empty for a new pod, so the plugin can hand it
+back.
+
+The reply's `result` holds `address` (IPv4 with prefix) and may hold
+`gateway`. A gateway in the compose file wins, then the plugin's, then the
+first host of the subnet.
+
+This call fails closed. If no installed plugin provides `from`, the plugin
+is disabled, errors, times out or replies with something unusable, or the
+address is already used by another pod on this host, `up` fails with the
+reason and no pod is created. The plugin owns uniqueness on the network.
+
+`gantry config` prints the map as written. `gantry pod ls` shows the
+address the pod was given.
 
 ## gantry-nautobot
 
@@ -249,5 +267,5 @@ The install guide says so.
 1. Group access (done).
 2. Plugin discovery, manifest, protocol and hooks, with a test plugin in
    `tests/` that records what it receives (done).
-3. Address allocation through plugins.
+3. Address allocation through plugins (done).
 4. gantry-nautobot in its own repository, once invite-nautobot 0.4.0 ships.

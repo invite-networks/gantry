@@ -10,3 +10,6 @@ post_stop = { mode = "sync" }
 post_start = { mode = "sync" }
 post_restart = { mode = "sync" }
 post_down = { mode = "async" }
+
+[address]
+from = "recorder"

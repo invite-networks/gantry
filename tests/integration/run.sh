@@ -224,6 +224,25 @@ plugins() {
   GT_PLUGIN_ENABLED=false $K up -d >/dev/null 2>&1
   check_not "a project that opts out starts no plugin" test -e "$got"
   GT_PLUGIN_ENABLED=false $K down >/dev/null 2>&1
+
+  if [ -n "${GT_IP1:-}" ]; then
+    A="gantry -f $here/plugins/alloc.yaml"
+    $A down >/dev/null 2>&1; rm -f "$got"
+    echo "$GT_IP1/$GT_PREFIX" > "$pd/recorder/answer"
+    check "up with an allocated address" $A up -d
+    check "pod has the plugin's address" sh -c "$A pod exec web ip -4 addr show eth0 | grep -q 'inet $GT_IP1/'"
+    check "allocate got the address options" sh -c "grep '\"type\":\"allocate\"' $got | grep -q '\"pool\":\"test\"'"
+    $A up -d >/dev/null 2>&1
+    check "second up keeps the address without asking" sh -c "[ \$(grep -c '\"type\":\"allocate\"' $got) = 1 ]"
+    $A down >/dev/null 2>&1
+    rm -f "$pd/recorder/answer"
+    check_not "up fails when the plugin has no address" $A up -d
+    check "the plugin's error is shown" sh -c "$A up -d 2>&1 | grep -q 'no address to give'"
+    check_not "no pod is left behind" test -e /run/netns/gt-gtalloc-web
+    $A down >/dev/null 2>&1
+  else
+    echo "  (address allocation skipped: set GT_IP1 and the other lab variables)"
+  fi
   rm -rf "$pd"
   unset GANTRY_PLUGIN_DIR GANTRY_RUNTIME
 }

@@ -45,7 +45,24 @@ pub fn config_hash(_project: &Project, pod: &Pod) -> String {
 /// Creates the pod if it does not exist or its shape changed. Returns the
 /// state and whether it was (re)created.
 pub async fn ensure(project: &Project, pod: &Pod) -> Result<(PodState, Ensured)> {
-    let hash = config_hash(project, pod);
+    ensure_hashed(project, pod, config_hash(project, pod)).await
+}
+
+/// True when [`ensure`] would create the pod: it is missing, its shape
+/// changed, or its namespace is gone.
+pub fn needs_create(project: &Project, pod: &Pod) -> Result<bool> {
+    Ok(!PodState::load(&project.name, &pod.name)?
+        .is_some_and(|s| s.config_hash == config_hash(project, pod) && ns::is_pinned(&s.netns)))
+}
+
+/// [`ensure`] with the hash to compare and record. A pod whose plugin
+/// addresses were filled in passes the hash of its configuration as
+/// written, so the same configuration keeps the pod and its addresses.
+pub async fn ensure_hashed(
+    project: &Project,
+    pod: &Pod,
+    hash: String,
+) -> Result<(PodState, Ensured)> {
     if let Some(existing) = PodState::load(&project.name, &pod.name)? {
         if existing.config_hash == hash && ns::is_pinned(&existing.netns) {
             return Ok((existing, Ensured::Unchanged));

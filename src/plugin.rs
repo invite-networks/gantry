@@ -82,6 +82,15 @@ pub enum Mode {
     Async,
 }
 
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Sync => "sync",
+            Mode::Async => "async",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HookSpec {
     pub mode: Mode,

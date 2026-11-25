@@ -237,7 +237,8 @@ fn own_subnets(pod: &Pod, book: &dyn AddressBook) -> Vec<IpNet> {
     let mut out: Vec<IpNet> = Vec::new();
     let statics = pod.attachments.iter().flat_map(|a| match &a.addressing {
         Addressing::Static(v) => v.clone(),
-        Addressing::Dhcp => vec![],
+        // Leased and plugin allocated addresses come from the book.
+        Addressing::Dhcp | Addressing::Plugin { .. } => vec![],
     });
     for n in statics.chain(book.pod_addresses(&pod.name)) {
         let n = n.trunc();

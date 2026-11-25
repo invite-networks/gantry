@@ -2,7 +2,7 @@
 //! several `-f` files, and normalization into [`crate::project::Project`].
 
 pub mod interpolate;
-mod normalize;
+pub(crate) mod normalize;
 pub mod raw;
 pub mod units;
 

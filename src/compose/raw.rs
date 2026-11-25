@@ -85,14 +85,22 @@ pub struct VolumeDef {
     pub extra: IndexMap<String, Value>,
 }
 
+/// A pod network's `address`: text, or a map asking a plugin for one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Address {
+    Text(String),
+    Plugin(IndexMap<String, Value>),
+}
+
 /// One interface of a pod: a macvlan or ipvlan link on a host interface.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PodNetwork {
     /// Host interface the link hangs off, such as `vlan4`.
     pub parent: Option<String>,
-    /// `10.10.10.10/24`, or `dhcp`.
-    pub address: Option<String>,
+    /// `10.10.10.10/24`, `dhcp`, or `{ from: <plugin>, ... }`.
+    pub address: Option<Address>,
     /// `macvlan` (default) or `ipvlan`.
     pub driver: Option<String>,
     /// IPv4 gateway. Default: the first host of the address's subnet.

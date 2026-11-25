@@ -103,7 +103,11 @@ impl Orchestrator {
                             .and_then(|s| s.interfaces.iter().find(|i| i.ifname == a.ifname));
                         let configured = match &a.addressing {
                             crate::project::Addressing::Static(v) => v.clone(),
-                            crate::project::Addressing::Dhcp => vec![],
+                            _ => vec![],
+                        };
+                        let from = match &a.addressing {
+                            crate::project::Addressing::Plugin { from, .. } => Some(from),
+                            _ => None,
                         };
                         let addresses = live.map_or(configured, |i| i.addresses.clone());
                         json!({
@@ -116,6 +120,7 @@ impl Orchestrator {
                             "gateway6": a.gateway6,
                             "default_route": a.default_route,
                             "mac": live.and_then(|i| i.mac.clone()),
+                            "from": from,
                         })
                     })
                     .collect();
@@ -403,7 +408,17 @@ impl Orchestrator {
                 ))
                 .await?;
             }
-            let (st, how) = pod::ensure(&self.project, pod).await?;
+            let allocates = pod
+                .attachments
+                .iter()
+                .any(|a| matches!(a.addressing, crate::project::Addressing::Plugin { .. }));
+            let (st, how) = if allocates && pod::needs_create(&self.project, pod)? {
+                let resolved = self.allocate_addresses(pod).await?;
+                let hash = pod::config_hash(&self.project, pod);
+                pod::ensure_hashed(&self.project, &resolved, hash).await?
+            } else {
+                pod::ensure(&self.project, pod).await?
+            };
             if how == Ensured::Created {
                 println!("Pod {pod_name} created ({})", describe_pod(&st));
             }
@@ -412,6 +427,64 @@ impl Orchestrator {
         self.project.save_snapshot()?;
         pod::refresh(&self.project)?;
         Ok(states)
+    }
+
+    /// The pod with each `address: { from: ... }` replaced by the address
+    /// its plugin allocated. Fails when a plugin does: a pod is never
+    /// created without its address.
+    async fn allocate_addresses(&self, pod: &crate::project::Pod) -> Result<crate::project::Pod> {
+        let previous = state::PodState::load(&self.project.name, &pod.name)?;
+        let mut out = pod.clone();
+        for a in &mut out.attachments {
+            let crate::project::Addressing::Plugin { from, options } = &a.addressing else {
+                continue;
+            };
+            let from = from.clone();
+            let mut address = options.clone();
+            address.insert("from".into(), json!(from));
+            let prev: Vec<ipnet::IpNet> = previous
+                .as_ref()
+                .and_then(|s| s.interfaces.iter().find(|i| i.ifname == a.ifname))
+                .map(|i| i.addresses.clone())
+                .unwrap_or_default();
+            let data = json!({
+                "project": self.project.name,
+                "pod": pod.name,
+                "hostname": pod.hostname,
+                "interface": {
+                    "name": a.ifname,
+                    "parent": a.parent,
+                    "driver": a.driver,
+                    "gateway": a.gateway,
+                    "default_route": a.default_route,
+                    "mac": a.mac.map(|m| crate::pod::link::format_mac(&m)),
+                },
+                "address": address,
+                "previous": prev,
+            });
+            let reply = self.plugins.allocate(&from, &data).await?;
+            let what = format!(
+                "pod {}: network {}: address from {from}",
+                pod.name, a.ifname
+            );
+            let (net, gateway) = parse_allocation(&reply, a.gateway)
+                .map_err(|e| Error::State(format!("{what}: {e}")))?;
+            if a.default_route && gateway.is_none() {
+                return Err(Error::State(format!(
+                    "{what}: {net} has no first host to use as the gateway; set gateway:"
+                )));
+            }
+            if let Some(holder) = address_holder(&self.project, &pod.name, net.addr())? {
+                return Err(Error::State(format!(
+                    "{what}: {} is already used by {holder}",
+                    net.addr()
+                )));
+            }
+            println!("Pod {} {}: {net} from {from}", pod.name, a.ifname);
+            a.addressing = crate::project::Addressing::Static(vec![net]);
+            a.gateway = gateway;
+        }
+        Ok(out)
     }
 
     /// Runs a one-off container of `service` in its pod (`gantry run`)
@@ -1073,4 +1146,113 @@ pub async fn notify_heal_restart(action: crate::heal::HealAction) {
     let o = Orchestrator::new(project);
     o.notify(Hook::HealRestart, Some(json!({ "heal": action })))
         .await;
+}
+
+/// Reads a plugin's `allocate` reply: `address` (IPv4 with prefix) and an
+/// optional `gateway`. A gateway written in the compose file wins, then
+/// the plugin's, then the first host of the subnet.
+fn parse_allocation(
+    reply: &Value,
+    configured: Option<std::net::IpAddr>,
+) -> std::result::Result<(ipnet::IpNet, Option<std::net::IpAddr>), String> {
+    use std::net::IpAddr;
+    let text = reply
+        .get("address")
+        .and_then(Value::as_str)
+        .ok_or("the reply has no address")?;
+    let v4 = match text.parse::<ipnet::IpNet>() {
+        Ok(ipnet::IpNet::V4(v)) => v,
+        _ => return Err(format!("{text:?} is not an IPv4 address with prefix")),
+    };
+    let subnet = v4.trunc();
+    if v4.prefix_len() < 31 && (v4.addr() == subnet.network() || v4.addr() == subnet.broadcast()) {
+        return Err(format!(
+            "{} is the network or broadcast address of {subnet}",
+            v4.addr()
+        ));
+    }
+    let offered = match reply.get("gateway").and_then(Value::as_str) {
+        Some(g) => Some(
+            g.parse::<IpAddr>()
+                .map_err(|_| format!("gateway {g:?} is not an address"))?,
+        ),
+        None => None,
+    };
+    let gateway = configured
+        .or(offered)
+        .or_else(|| crate::compose::normalize::first_host(&subnet).map(IpAddr::V4));
+    if let Some(g) = gateway {
+        match g {
+            IpAddr::V4(g4) if subnet.contains(&g4) && g4 != v4.addr() => {}
+            _ => return Err(format!("gateway {g} is not a usable gateway in {subnet}")),
+        }
+    }
+    Ok((ipnet::IpNet::V4(v4), gateway))
+}
+
+/// Which pod on this host already uses `addr`: a static address in this
+/// project, or a live address of any project's pod. `pod` itself is
+/// skipped, since it is being recreated.
+fn address_holder(project: &Project, pod: &str, addr: std::net::IpAddr) -> Result<Option<String>> {
+    for p in project.pods.values().filter(|p| p.name != pod) {
+        for a in &p.attachments {
+            if let crate::project::Addressing::Static(v) = &a.addressing
+                && v.iter().any(|n| n.addr() == addr)
+            {
+                return Ok(Some(format!("pod {}", p.name)));
+            }
+        }
+    }
+    for other in state::list_projects() {
+        for p in state::list_pods(&other) {
+            if other == project.name && p == pod {
+                continue;
+            }
+            if let Some(st) = state::PodState::load(&other, &p)?
+                && st.addresses().iter().any(|n| n.addr() == addr)
+            {
+                return Ok(Some(format!("pod {p} of project {other}")));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::parse_allocation;
+    use serde_json::json;
+
+    #[test]
+    fn replies() {
+        let gw = |s: &str| Some(s.parse().unwrap());
+        let (n, g) = parse_allocation(&json!({"address": "192.0.2.218/29"}), None).unwrap();
+        assert_eq!(
+            (n.to_string(), g),
+            ("192.0.2.218/29".into(), gw("192.0.2.217"))
+        );
+        let (_, g) = parse_allocation(
+            &json!({"address": "192.0.2.218/29", "gateway": "192.0.2.222"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(g, gw("192.0.2.222"));
+        // The compose file's gateway wins over the plugin's.
+        let (_, g) = parse_allocation(
+            &json!({"address": "192.0.2.218/29", "gateway": "192.0.2.222"}),
+            gw("192.0.2.217"),
+        )
+        .unwrap();
+        assert_eq!(g, gw("192.0.2.217"));
+        for bad in [
+            json!({}),
+            json!({"address": "192.0.2.218"}),
+            json!({"address": "2001:db8::1/64"}),
+            json!({"address": "192.0.2.216/29"}),
+            json!({"address": "192.0.2.218/29", "gateway": "198.51.100.1"}),
+            json!({"address": "192.0.2.218/29", "gateway": "192.0.2.218"}),
+        ] {
+            assert!(parse_allocation(&bad, None).is_err(), "{bad}");
+        }
+    }
 }

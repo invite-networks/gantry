@@ -155,6 +155,12 @@ pub enum Addressing {
     Static(Vec<IpNet>),
     /// DHCPv4 (plus SLAAC for IPv6 if the network offers it).
     Dhcp,
+    /// Allocated by the plugin that provides `from` when the pod is
+    /// created; `options` are the other keys, passed to it as they are.
+    Plugin {
+        from: String,
+        options: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// The firewall applied inside a pod's network namespace.

@@ -188,6 +188,9 @@ enum Cmd {
     /// Pod commands
     #[command(subcommand)]
     Pod(PodCmd),
+    /// Plugin commands
+    #[command(subcommand)]
+    Plugin(PluginCmd),
     /// Firewall commands
     #[command(subcommand, alias = "fw")]
     Firewall(FwCmd),
@@ -277,6 +280,13 @@ enum DataCmd {
         timeout: Option<u64>,
         services: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins, their hooks, and whether the project in
+    /// this directory uses them
+    Ls,
 }
 
 #[derive(Subcommand)]
@@ -895,6 +905,38 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 }
             }
             o.ensure_images(&list, None, true).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Plugin(PluginCmd::Ls) => {
+            let registry = gantry::plugin::Registry::system();
+            // Outside a project directory, list what the host has.
+            let project = load_project(&g).ok().map(|o| o.project);
+            if registry.plugins.is_empty() {
+                println!("no plugins installed");
+            }
+            for m in &registry.plugins {
+                let use_ = match (&project, m.host_enabled) {
+                    (_, false) => "disabled on this host".to_string(),
+                    (Some(p), true) => match p.plugins.get(&m.name) {
+                        Some(s) if !s.enabled => format!("disabled for {}", p.name),
+                        _ => format!("enabled for {}", p.name),
+                    },
+                    (None, true) => "enabled".to_string(),
+                };
+                println!("{} {} ({use_})", m.name, m.version.as_deref().unwrap_or(""));
+                println!("  dir: {}", m.dir.display());
+                for (hook, spec) in &m.hooks {
+                    println!(
+                        "  {}: {}, {:?}",
+                        hook.as_str(),
+                        spec.mode.as_str(),
+                        spec.timeout
+                    );
+                }
+                if let Some(a) = &m.address {
+                    println!("  address from {}: {:?}", a.from, a.timeout);
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Pod(PodCmd::List) => {

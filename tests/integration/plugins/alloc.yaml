@@ -1,0 +1,17 @@
+# Plugin scenario, address part: the recording plugin hands out the pod's
+# address (recorder/answer).
+name: gtalloc
+
+pods:
+  web:
+    network:
+      - parent: ${GT_PARENT}
+        address: { from: recorder, pool: test }
+        gateway: ${GT_GATEWAY}
+
+services:
+  app:
+    image: busybox:1.37
+    pod: web
+    command: [sleep, "3600"]
+    stop_grace_period: 1s

@@ -111,8 +111,10 @@ no bridges and no NAT. A pod with two VLANs lists two entries.
 * **parent** is the host interface, normally a VLAN interface such as
   `vlan4`. Required.
 * **address** is required. Give an IPv4 address with its prefix length
-  (`10.10.10.10/24`), or `dhcp` to lease one from the LAN's DHCP server.
-  Gantry never picks an address on its own. An address without a prefix,
+  (`10.10.10.10/24`), `dhcp` to lease one from the LAN's DHCP server, or
+  `{ from: <plugin>, ... }` to have an installed plugin allocate one when
+  the pod is created (see [plugins](spec/plugins.md#addresses); the other
+  keys go to the plugin). Gantry never picks an address on its own. An address without a prefix,
   or one that is its subnet's network, broadcast or gateway address, is an
   error.
 * **gateway** defaults to the first host of the address's subnet:
