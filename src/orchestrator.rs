@@ -94,6 +94,7 @@ impl Orchestrator {
             .values()
             .map(|pod| {
                 let st = state::PodState::load(&p.name, &pod.name).ok().flatten();
+                let pod_dir = state::pod_dir(&p.name, &pod.name);
                 let interfaces: Vec<Value> = pod
                     .attachments
                     .iter()
@@ -142,7 +143,11 @@ impl Orchestrator {
                             "cpus": svc.and_then(|s| s.cpus),
                             "mem_limit": svc.and_then(|s| s.mem_limit),
                             "labels": svc.map(|s| s.labels.clone()).unwrap_or_default(),
-                            "volumes": c.mounts.iter().map(|m| json!({
+                            // The pod's shared /etc files are gantry's own
+                            // plumbing, not data.
+                            "volumes": c.mounts.iter().filter(|m| {
+                                !std::path::Path::new(&m.source).starts_with(&pod_dir)
+                            }).map(|m| json!({
                                 "type": m.kind,
                                 "name": m.name,
                                 "source": m.source,

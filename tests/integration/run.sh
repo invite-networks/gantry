@@ -212,6 +212,7 @@ plugins() {
   check "up with a plugin installed" $K up -d
   check "plugin got hello, pre_up and post_up" sh -c "grep -q '\"type\":\"hello\"' $got && grep -q '\"hook\":\"pre_up\"' $got && grep -q '\"hook\":\"post_up\"' $got"
   check "post_up lists the running container" sh -c "grep '\"hook\":\"post_up\"' $got | grep -q '\"name\":\"gtplug-app-1\".*\"state\":\"running\"'"
+  check_not "the pod's own /etc files are not reported as volumes" sh -c "grep '\"hook\":\"post_up\"' $got | grep -q '/etc/hosts'"
   check "project settings reach the plugin" sh -c "grep '\"hook\":\"post_up\"' $got | grep -q '\"tenant\":\"acme\"'"
   check_not "a hook it did not subscribe to is not sent" grep -q '"hook":"pre_down"' "$got"
   $K stop >/dev/null 2>&1; $K start >/dev/null 2>&1; $K restart >/dev/null 2>&1

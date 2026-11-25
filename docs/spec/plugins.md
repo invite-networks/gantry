@@ -153,6 +153,10 @@ when it exists with none running, and `down` after `gantry down`, where
 every container is `down` too. `heal_restart` adds a `heal` object: the
 watcher's action (project, pod, service, container, attempt, trigger, time).
 
+`volumes` lists the container's bind, volume and tmpfs mounts, except the
+pod's own `/etc/hosts`, `/etc/hostname` and `/etc/resolv.conf`, which
+gantry manages.
+
 Environment variables, secrets and registry credentials are never sent.
 `settings` is the project's `plugins.<name>` block with `enabled` removed.
 
