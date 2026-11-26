@@ -270,7 +270,9 @@ mod tests {
 }
 
 /// Most passes of YAML merge keys. A merge source can itself hold `<<`,
-/// which one pass copies in as a plain key; real files nest a few levels.
+/// which one pass copies in as a plain key. Each pass resolves about twice
+/// the depth of the one before, and the parser's own recursion limit
+/// refuses nesting deep enough to need this many, so it is a backstop.
 const MAX_MERGE_PASSES: usize = 16;
 
 /// Applies `<<` merge keys until none are left, as Compose does, so a key
@@ -283,7 +285,7 @@ fn merge_fully(doc: &mut Value) -> std::result::Result<(), String> {
         }
     }
     Err(format!(
-        "merge keys (<<) nested more than {MAX_MERGE_PASSES} deep"
+        "merge keys (<<) still present after {MAX_MERGE_PASSES} merge passes"
     ))
 }
 
