@@ -20,12 +20,21 @@ All commands run as root from the project directory (or with `-f` and
 | Status | `gantry ps`, `gantry pod ls` |
 | Pod detail, including leases | `gantry pod inspect <pod>` |
 | Logs | `gantry logs -f --tail 100 [svc...]` |
+| Resource use per container and pod | `gantry stats` (`--no-stream` for one reading, `--json` for scripts) |
 | Shell in a service | `gantry exec <svc> sh` |
 | Restart services, keep pods | `gantry restart [svc...]` |
 | Stop services, keep pods and leases | `gantry stop [svc...]` |
 | Update images | `gantry pull && gantry up -d` |
 | Build images for services with `build:` | `gantry build [svc...]`, or `gantry up -d --build` |
 | Remove everything | `gantry down` (`-v` also removes named volumes) |
+
+`gantry stats` reads CPU, memory, processes and disk I/O per container, as
+each container has its own cgroup, and adds them up per pod. Network is
+shown once per pod, from the pod's interfaces, because the containers of a
+pod share them; `docker stats` repeats the pod's traffic on every
+container. `THROTTLED` is the share of time the CPU limit (`cpus`, 1 by
+default) held a container back: a service that sits near 100% needs a
+higher `cpus`.
 
 `up` is idempotent. A second run with no changes reports each container as
 up to date. Changing a pod's addresses, networks, hostname, shared

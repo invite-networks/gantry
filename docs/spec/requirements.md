@@ -196,6 +196,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CLI-18 | `up` shall refuse to recreate a service onto a new data path that is empty, or holds an unfinished move, while the old path has data. | M |
 | FR-CLI-19 | When the installed `/usr/bin/gantry` runs as a non-root member of the `gantry` group, it shall run itself again through `sudo -n` with the same arguments and working directory, except for `completion` and `internal` helpers. A non-member without root shall be told to run it as root or join the group. | M |
 | FR-CLI-20 | `plugin ls` shall list installed plugins, their hooks and modes, the address source they provide, and whether each is enabled on the host and for the project in the current directory. | S |
+| FR-CLI-21 | `stats [--no-stream] [--json] [--interval N] [svc...]` shall show, per running container, CPU use as a percent of one CPU with its limit and the share of scheduler periods throttled, memory without reclaimable cache against its limit, process count and block I/O rates, and per pod the sum of those plus the network rates of the pod's interfaces (loopback excluded), counted once. Figures come from two readings `--interval` seconds apart. A container whose engine reports no figures shall show `-` and a note. | S |
 | FR-CLI-16 | Services in the same dependency level shall be created and started in parallel; `down` and `stop` shall act on reverse levels in parallel; pulls shall run in parallel. | M |
 
 ### 5.9 State and lifecycle

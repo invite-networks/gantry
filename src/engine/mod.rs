@@ -20,7 +20,7 @@ use bollard::models::{ContainerCreateBody, ContainerInspectResponse, VolumeCreat
 use bollard::query_parameters::{
     CreateContainerOptions, CreateImageOptions, InspectContainerOptions, KillContainerOptions,
     ListContainersOptions, LogsOptions, RemoveContainerOptions, RemoveVolumeOptions,
-    RestartContainerOptions, StartContainerOptions, StopContainerOptions, TopOptions,
+    RestartContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions, TopOptions,
 };
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use std::collections::HashMap;
@@ -57,6 +57,24 @@ pub struct Engine {
     pub kind: RuntimeKind,
     host: String,
     client: Arc<OnceCell<Client>>,
+}
+
+/// One reading of a container's resource counters ([`Engine::sample`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sample {
+    /// CPU time used since the container started, in nanoseconds.
+    pub cpu_ns: Option<u64>,
+    /// Memory in use, without reclaimable page cache.
+    pub memory: Option<u64>,
+    pub memory_limit: Option<u64>,
+    pub pids: Option<u64>,
+    /// Bytes read from and written to block devices since start.
+    pub block_read: u64,
+    pub block_write: u64,
+    /// CFS scheduler periods, and those in which the CPU limit held the
+    /// container back.
+    pub periods: u64,
+    pub throttled_periods: u64,
 }
 
 /// A container as reported by `inspect`.
@@ -417,6 +435,66 @@ impl Engine {
             Err(e) if not_found(&e) => Ok(None),
             Err(e) => Err(self.err(&format!("inspect {name}"), e)),
         }
+    }
+
+    /// One reading of a container's resource counters. Counters are
+    /// cumulative, so a rate needs two readings.
+    pub async fn sample(&self, name: &str) -> Result<Sample> {
+        let opts = StatsOptions {
+            stream: false,
+            one_shot: true,
+        };
+        let docker = self.docker().await?;
+        let mut stream = docker.stats(name, Some(opts));
+        let next = tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .map_err(|_| Error::Engine(format!("{}: stats {name}: timed out", self.kind)))?;
+        let s = match next {
+            Some(Ok(s)) => s,
+            Some(Err(e)) => return Err(self.err(&format!("stats {name}"), e)),
+            None => {
+                return Err(Error::Engine(format!(
+                    "{}: stats {name}: no data",
+                    self.kind
+                )));
+            }
+        };
+        let cpu = s.cpu_stats.unwrap_or_default();
+        let throttling = cpu.throttling_data.unwrap_or_default();
+        let mem = s.memory_stats.unwrap_or_default();
+        // Page cache that can be dropped is not counted, as `docker stats`
+        // does (cgroup v2 names it inactive_file, v1 total_inactive_file).
+        let inactive = mem
+            .stats
+            .as_ref()
+            .and_then(|m| {
+                m.get("inactive_file")
+                    .or_else(|| m.get("total_inactive_file"))
+            })
+            .copied()
+            .unwrap_or(0);
+        let (mut read, mut write) = (0, 0);
+        for e in s
+            .blkio_stats
+            .and_then(|b| b.io_service_bytes_recursive)
+            .unwrap_or_default()
+        {
+            match e.op.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("read") => read += e.value.unwrap_or(0),
+                Some("write") => write += e.value.unwrap_or(0),
+                _ => {}
+            }
+        }
+        Ok(Sample {
+            cpu_ns: cpu.cpu_usage.and_then(|u| u.total_usage),
+            memory: mem.usage.map(|u| u.saturating_sub(inactive)),
+            memory_limit: mem.limit,
+            pids: s.pids_stats.and_then(|p| p.current),
+            block_read: read,
+            block_write: write,
+            periods: throttling.periods.unwrap_or(0),
+            throttled_periods: throttling.throttled_periods.unwrap_or(0),
+        })
     }
 
     pub async fn volume_ensure(

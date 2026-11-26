@@ -333,6 +333,7 @@ candidates for new tests.
 | FR-CMP-10 | `resource_limit_defaults` |
 | FR-CLI-19, NFR-SEC-12 | `tests/packaging/remote.sh` (gantry group checks: member elevates, keeps environment, cannot sudo other commands; non-member refused and told about the group; `gantry-remote` outside the group and still refused), `tests/packaging/rename.sh` (old `gantry` account renamed with the same uid) |
 | FR-CLI-20 | Review |
+| FR-CLI-21 | `net_dev`, `rates_from_two_samples`, `units`; e2e (stats table and JSON, pod network once); checked by hand with a kiri container and a CPU limited container (throttling at 100%) |
 | FR-PLUG-01 | `manifests_and_overrides`, `writable_manifest_is_refused` |
 | FR-PLUG-02, FR-PLUG-03 | `sync_and_async_events_reach_the_plugin`, plugins scenario (hello) |
 | FR-PLUG-04 | plugins scenario (each hook once; restart is one `post_restart`); `heal_restart` and `boot` by review |

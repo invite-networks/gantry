@@ -58,6 +58,8 @@ e2e() {
   check "pod without firewall: section gets the defaults" sh -c "$K pod exec other nft list table inet gantry | grep -q 'default: reject local subnet'"
   check "host has no gantry table" sh -c "! nft list table inet gantry"
   check "ps shows redis healthy" sh -c "$K ps | grep redis | grep -q healthy"
+  check "stats lists each pod and its containers ($rt)" sh -c "$K stats --no-stream --interval 1 > /tmp/gt-e2e-stats.txt && grep -q '^web ' /tmp/gt-e2e-stats.txt && grep -q 'gt-e2e-redis-1' /tmp/gt-e2e-stats.txt"
+  check "stats --json reports pod network once ($rt)" sh -c "$K stats --json --interval 1 | python3 -c 'import json,sys; p={x[\"pod\"]:x for x in json.load(sys.stdin)}; assert p[\"web\"][\"net_rx_rate\"] is not None and all(\"net_rx_rate\" not in c for c in p[\"web\"][\"containers\"])'"
   if [ "$rt" = docker ]; then
     cname=gt-e2e-client-1
     docker restart "$cname" >/dev/null 2>&1

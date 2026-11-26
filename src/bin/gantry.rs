@@ -151,6 +151,20 @@ enum Cmd {
     },
     /// Show the processes running in services
     Top { services: Vec<String> },
+    /// Resource use per container, summed per pod. Network is per pod,
+    /// since a pod's containers share its interfaces
+    Stats {
+        /// Print one reading and exit
+        #[arg(long)]
+        no_stream: bool,
+        /// Print JSON (implies --no-stream)
+        #[arg(long)]
+        json: bool,
+        /// Seconds between the two readings each figure is taken from
+        #[arg(long, default_value_t = 2)]
+        interval: u64,
+        services: Vec<String>,
+    },
     /// List projects that have pods on this host
     Ls,
     /// Show gantry and engine versions
@@ -720,6 +734,48 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             require_root()?;
             load_project(&g)?.rm(&services, stop).await?;
             Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Stats {
+            no_stream,
+            json,
+            interval,
+            services,
+        } => {
+            require_root()?;
+            let o = load_project(&g)?;
+            for s in &services {
+                if !o.project.services.contains_key(s) {
+                    return Err(Error::config(format!("no such service {s:?}")));
+                }
+            }
+            let interval = Duration::from_secs(interval.clamp(1, 60));
+            let live = !(no_stream || json);
+            loop {
+                let pods = gantry::stats::collect(&o, &services, interval).await?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&pods)
+                            .map_err(|e| Error::State(e.to_string()))?
+                    );
+                } else {
+                    let mut text = gantry::stats::render(&pods);
+                    if pods.is_empty() {
+                        text = "no running containers\n".into();
+                    }
+                    if live && std::io::stdout().is_terminal() {
+                        // Clear and redraw in place.
+                        print!("\x1b[2J\x1b[H");
+                    }
+                    print!("{text}");
+                    if live {
+                        println!();
+                    }
+                }
+                if !live {
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
         }
         Cmd::Top { services } => {
             require_root()?;

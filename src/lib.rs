@@ -30,3 +30,4 @@ pub mod engine;
 pub mod oci;
 pub mod orchestrator;
 pub mod plugin;
+pub mod stats;
