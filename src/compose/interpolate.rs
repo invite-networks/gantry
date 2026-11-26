@@ -40,8 +40,24 @@ pub fn interpolate_value(v: &mut Value, env: &dyn Lookup, path: &str) -> Result<
     Ok(())
 }
 
+/// How deeply `${...}` may nest inside a default, alternate or error
+/// message. Real files nest one or two levels; the cap keeps hostile text
+/// from exhausting the stack.
+pub const MAX_NESTING: usize = 16;
+
 /// Interpolates one string.
 pub fn interpolate(input: &str, env: &dyn Lookup) -> std::result::Result<String, String> {
+    interpolate_at(input, env, 0)
+}
+
+fn interpolate_at(
+    input: &str,
+    env: &dyn Lookup,
+    depth: usize,
+) -> std::result::Result<String, String> {
+    if depth > MAX_NESTING {
+        return Err(format!("variables nested more than {MAX_NESTING} deep"));
+    }
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
@@ -61,7 +77,7 @@ pub fn interpolate(input: &str, env: &dyn Lookup) -> std::result::Result<String,
                 let end = matching_brace(&chars, i + 1)
                     .ok_or_else(|| format!("unterminated variable in {input:?}"))?;
                 let body: String = chars[i + 2..end].iter().collect();
-                out.push_str(&expand_braced(&body, env)?);
+                out.push_str(&expand_braced(&body, env, depth)?);
                 i = end + 1;
             }
             Some(n) if n.is_ascii_alphabetic() || *n == '_' => {
@@ -100,7 +116,11 @@ fn matching_brace(chars: &[char], open: usize) -> Option<usize> {
     None
 }
 
-fn expand_braced(body: &str, env: &dyn Lookup) -> std::result::Result<String, String> {
+fn expand_braced(
+    body: &str,
+    env: &dyn Lookup,
+    depth: usize,
+) -> std::result::Result<String, String> {
     let name_end = body
         .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .unwrap_or(body.len());
@@ -131,21 +151,21 @@ fn expand_braced(body: &str, env: &dyn Lookup) -> std::result::Result<String, St
     Ok(match op {
         "" => value.unwrap_or_default(),
         ":-" if set_nonempty => value.unwrap_or_default(),
-        ":-" => interpolate(arg, env)?,
+        ":-" => interpolate_at(arg, env, depth + 1)?,
         "-" if value.is_some() => value.unwrap_or_default(),
-        "-" => interpolate(arg, env)?,
+        "-" => interpolate_at(arg, env, depth + 1)?,
         ":?" if set_nonempty => value.unwrap_or_default(),
         "?" if value.is_some() => value.unwrap_or_default(),
         ":?" | "?" => {
-            let msg = interpolate(arg, env)?;
+            let msg = interpolate_at(arg, env, depth + 1)?;
             return Err(if msg.is_empty() {
                 format!("required variable {name} is missing a value")
             } else {
                 format!("required variable {name} is missing a value: {msg}")
             });
         }
-        ":+" if set_nonempty => interpolate(arg, env)?,
-        "+" if value.is_some() => interpolate(arg, env)?,
+        ":+" if set_nonempty => interpolate_at(arg, env, depth + 1)?,
+        "+" if value.is_some() => interpolate_at(arg, env, depth + 1)?,
         _ => String::new(),
     })
 }
@@ -189,6 +209,18 @@ mod tests {
         assert!(err.contains("MISSING") && err.contains("set it"));
         assert!(interpolate("${EMPTY?x}", &e).is_ok());
         assert!(interpolate("${EMPTY:?x}", &e).is_err());
+    }
+
+    #[test]
+    fn nesting_is_capped() {
+        let e = env();
+        let nested = |n: usize| format!("{}x{}", "${NOPE:-".repeat(n), "}".repeat(n));
+        assert_eq!(interpolate(&nested(MAX_NESTING), &e).unwrap(), "x");
+        assert!(
+            interpolate(&nested(100_000), &e)
+                .unwrap_err()
+                .contains("nested")
+        );
     }
 
     #[test]

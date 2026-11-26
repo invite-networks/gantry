@@ -86,6 +86,7 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
     let mut merged = Value::Mapping(Mapping::new());
     for file in &files {
         let text = std::fs::read_to_string(file).ctx(|| format!("read {}", file.display()))?;
+        within_budget(&text).map_err(|e| Error::config(format!("{}: {e}", file.display())))?;
         let mut doc: Value = serde_norway::from_str(&text)
             .map_err(|e| Error::config(format!("{}: {e}", file.display())))?;
         if doc.is_null() {
@@ -266,5 +267,130 @@ mod tests {
         assert_eq!(web["image"].as_str(), Some("b"));
         assert_eq!(web["ports"].as_sequence().unwrap().len(), 2);
         assert_eq!(web["command"].as_sequence().unwrap().len(), 1);
+    }
+}
+
+/// Most YAML nodes a file may hold once its aliases are expanded. A real
+/// project has a few thousand. Without a cap, a small file of nested
+/// aliases expands to gigabytes while it is parsed.
+pub const MAX_NODES: usize = 1_000_000;
+
+/// Walks the document once, following aliases, storing nothing, and stops
+/// as soon as it passes [`MAX_NODES`].
+pub fn within_budget(text: &str) -> std::result::Result<(), String> {
+    use serde::de::DeserializeSeed;
+    let count = std::cell::Cell::new(0usize);
+    for doc in serde_norway::Deserializer::from_str(text) {
+        Count(&count).deserialize(doc).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+struct Count<'a>(&'a std::cell::Cell<usize>);
+
+impl Count<'_> {
+    fn bump<E: serde::de::Error>(&self) -> std::result::Result<(), E> {
+        let n = self.0.get() + 1;
+        self.0.set(n);
+        if n > MAX_NODES {
+            Err(E::custom(format!(
+                "more than {MAX_NODES} values once aliases are expanded"
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Count<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> std::result::Result<(), D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Count<'_> {
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any YAML value")
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_none<E: serde::de::Error>(self) -> std::result::Result<(), E> {
+        self.bump()
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> std::result::Result<(), D::Error> {
+        use serde::de::DeserializeSeed;
+        self.bump()?;
+        Count(self.0).deserialize(d)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<(), A::Error> {
+        self.bump()?;
+        while seq.next_element_seed(Count(self.0))?.is_some() {}
+        Ok(())
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<(), A::Error> {
+        self.bump()?;
+        while map.next_key_seed(Count(self.0))?.is_some() {
+            map.next_value_seed(Count(self.0))?;
+        }
+        Ok(())
+    }
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(
+        self,
+        data: A,
+    ) -> std::result::Result<(), A::Error> {
+        use serde::de::VariantAccess;
+        self.bump()?;
+        let ((), v) = data.variant_seed(Count(self.0))?;
+        v.newtype_variant_seed(Count(self.0))
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn alias_bombs_are_refused() {
+        let n = 4000;
+        let mut text = format!("x-big: &big [{}]\nx-refs:\n", vec!["1"; n].join(","));
+        for _ in 0..n {
+            text.push_str("  - *big\n");
+        }
+        let started = std::time::Instant::now();
+        let e = within_budget(&text).unwrap_err();
+        assert!(e.contains("aliases"), "{e}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn ordinary_files_pass() {
+        within_budget("name: t\nx-a: &a {image: x}\nservices:\n  a: *a\n  b: { <<: *a, command: [sh] }\n  c: !reset null\n").unwrap();
+        within_budget("").unwrap();
     }
 }
