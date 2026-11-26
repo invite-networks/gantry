@@ -92,8 +92,7 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
         if doc.is_null() {
             continue;
         }
-        doc.apply_merge()
-            .map_err(|e| Error::config(format!("{}: {e}", file.display())))?;
+        merge_fully(&mut doc).map_err(|e| Error::config(format!("{}: {e}", file.display())))?;
         interpolate::interpolate_value(&mut doc, &lookup, &file.display().to_string())?;
         merge_into(&mut merged, doc, "");
     }
@@ -270,6 +269,35 @@ mod tests {
     }
 }
 
+/// Most passes of YAML merge keys. A merge source can itself hold `<<`,
+/// which one pass copies in as a plain key; real files nest a few levels.
+const MAX_MERGE_PASSES: usize = 16;
+
+/// Applies `<<` merge keys until none are left, as Compose does, so a key
+/// inside a nested merge source is not silently dropped.
+fn merge_fully(doc: &mut Value) -> std::result::Result<(), String> {
+    for _ in 0..MAX_MERGE_PASSES {
+        doc.apply_merge().map_err(|e| e.to_string())?;
+        if !has_merge_key(doc) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "merge keys (<<) nested more than {MAX_MERGE_PASSES} deep"
+    ))
+}
+
+fn has_merge_key(v: &Value) -> bool {
+    match v {
+        Value::Mapping(m) => m
+            .iter()
+            .any(|(k, v)| k.as_str() == Some("<<") || has_merge_key(v)),
+        Value::Sequence(s) => s.iter().any(has_merge_key),
+        Value::Tagged(t) => has_merge_key(&t.value),
+        _ => false,
+    }
+}
+
 /// Most YAML values a file may hold once its aliases are expanded. A real
 /// project has a few thousand; a 250 KB file with thousands of variables
 /// stays far below this. Without a cap, a few KB of nested aliases
@@ -419,6 +447,20 @@ mod budget_tests {
         }
         let e = within_budget(&text).unwrap_err();
         assert!(e.contains("MiB of text"), "{e}");
+    }
+
+    #[test]
+    fn nested_merge_keys_are_applied() {
+        let mut doc: Value = serde_norway::from_str(
+            "x-i: &i { user: '1000' }\nx-o: &o { <<: *i, working_dir: /srv }\nservices:\n  a: { <<: { <<: *o, image: x }, pod: p }\n",
+        )
+        .unwrap();
+        merge_fully(&mut doc).unwrap();
+        let a = &doc["services"]["a"];
+        assert_eq!(a["user"], "1000");
+        assert_eq!(a["working_dir"], "/srv");
+        assert_eq!(a["image"], "x");
+        assert!(!has_merge_key(&doc));
     }
 
     #[test]
