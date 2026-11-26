@@ -270,31 +270,54 @@ mod tests {
     }
 }
 
-/// Most YAML nodes a file may hold once its aliases are expanded. A real
-/// project has a few thousand. Without a cap, a small file of nested
-/// aliases expands to gigabytes while it is parsed.
-pub const MAX_NODES: usize = 1_000_000;
+/// Most YAML values a file may hold once its aliases are expanded. A real
+/// project has a few thousand; a 250 KB file with thousands of variables
+/// stays far below this. Without a cap, a few KB of nested aliases
+/// expands to gigabytes while it is parsed.
+pub const MAX_NODES: usize = 200_000;
+
+/// Most text (keys and scalars) a file may hold once its aliases are
+/// expanded. Counting values alone misses one long string aliased many
+/// times.
+pub const MAX_TEXT: usize = 4 * 1024 * 1024;
 
 /// Walks the document once, following aliases, storing nothing, and stops
-/// as soon as it passes [`MAX_NODES`].
+/// as soon as it passes [`MAX_NODES`] values or [`MAX_TEXT`] bytes of text.
 pub fn within_budget(text: &str) -> std::result::Result<(), String> {
     use serde::de::DeserializeSeed;
-    let count = std::cell::Cell::new(0usize);
+    let budget = Budget::default();
     for doc in serde_norway::Deserializer::from_str(text) {
-        Count(&count).deserialize(doc).map_err(|e| e.to_string())?;
+        Count(&budget).deserialize(doc).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-struct Count<'a>(&'a std::cell::Cell<usize>);
+#[derive(Default)]
+struct Budget {
+    nodes: std::cell::Cell<usize>,
+    text: std::cell::Cell<usize>,
+}
+
+struct Count<'a>(&'a Budget);
 
 impl Count<'_> {
     fn bump<E: serde::de::Error>(&self) -> std::result::Result<(), E> {
-        let n = self.0.get() + 1;
-        self.0.set(n);
+        self.add(0)
+    }
+
+    fn add<E: serde::de::Error>(&self, text: usize) -> std::result::Result<(), E> {
+        let n = self.0.nodes.get() + 1;
+        self.0.nodes.set(n);
+        let t = self.0.text.get().saturating_add(text);
+        self.0.text.set(t);
         if n > MAX_NODES {
             Err(E::custom(format!(
                 "more than {MAX_NODES} values once aliases are expanded"
+            )))
+        } else if t > MAX_TEXT {
+            Err(E::custom(format!(
+                "more than {} MiB of text once aliases are expanded",
+                MAX_TEXT / (1024 * 1024)
             )))
         } else {
             Ok(())
@@ -328,8 +351,8 @@ impl<'de> serde::de::Visitor<'de> for Count<'_> {
     fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<(), E> {
         self.bump()
     }
-    fn visit_str<E: serde::de::Error>(self, _: &str) -> std::result::Result<(), E> {
-        self.bump()
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<(), E> {
+        self.add(v.len())
     }
     fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<(), E> {
         self.bump()
@@ -386,6 +409,16 @@ mod budget_tests {
         let e = within_budget(&text).unwrap_err();
         assert!(e.contains("aliases"), "{e}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn long_aliased_strings_are_refused() {
+        let mut text = format!("x-s: &s \"{}\"\nx-refs:\n", "a".repeat(200_000));
+        for _ in 0..100 {
+            text.push_str("  - *s\n");
+        }
+        let e = within_budget(&text).unwrap_err();
+        assert!(e.contains("MiB of text"), "{e}");
     }
 
     #[test]
