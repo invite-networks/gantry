@@ -22,7 +22,8 @@ are not on a Gantry Host.
 ## How a Host Asks for Certificates
 
 Every Gantry Host holds a **Gantry credential**, provisioned by Ansible (role
-`step_ca`, playbook `playbooks/gantry-hosts.yml`) only on hosts whose
+`step_ca`, `tasks_from: gantry_credential.yml`, run only by
+`playbooks/gantry-hosts.yml`) only on hosts whose
 Nautobot role is "Gantry Host":
 
 | | |
@@ -31,7 +32,7 @@ Nautobot role is "Gantry Host":
 | Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), client authentication only, SAN `<host>.infra.invite.global`, 90 days |
 | Key | `/etc/ssl/private/gantry-credential.key`, root only, 0600 |
 | CA root | `/usr/local/share/ca-certificates/infraca-root.crt` |
-| Renewal | a systemd timer runs `step ca renew`, and the next Ansible run reissues a lapsed credential |
+| Renewal | `step-renew-gantry.timer` runs `step ca renew`, and the next run of `playbooks/gantry-hosts.yml` reissues a lapsed credential |
 
 Gantry asks the X5C provisioner `gantry-hosts` for the pod's certificate,
 signed with the credential, the equivalent of:
