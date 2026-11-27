@@ -361,13 +361,7 @@ fn check_owner(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A project's `plugins.<name>` block.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProjectPlugin {
-    pub enabled: bool,
-    /// Every key besides `enabled`, passed to the plugin as `settings`.
-    pub settings: serde_json::Map<String, Value>,
-}
+pub use crate::project::ProjectPlugin;
 
 /// A plugin's reply to one message.
 type Reply = Result<Value, String>;

@@ -410,7 +410,7 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
 fn project_plugin(
     name: &str,
     v: Option<serde_norway::Value>,
-) -> Result<crate::plugin::ProjectPlugin> {
+) -> Result<crate::project::ProjectPlugin> {
     let err = |m: &str| Error::config(format!("plugins.{name}: {m}"));
     let mut settings = match v.map(serde_json::to_value).transpose() {
         Ok(None | Some(serde_json::Value::Null)) => serde_json::Map::new(),
@@ -426,7 +426,7 @@ fn project_plugin(
         Some(serde_json::Value::String(s)) if s == "false" => false,
         Some(_) => return Err(err("enabled must be true or false")),
     };
-    Ok(crate::plugin::ProjectPlugin { enabled, settings })
+    Ok(crate::project::ProjectPlugin { enabled, settings })
 }
 
 impl Service {
@@ -718,7 +718,7 @@ fn pod_networks(pod: &str, raw: Vec<raw::PodNetwork>) -> Result<Vec<Attachment>>
         let mac = n
             .mac_address
             .as_deref()
-            .map(|m| parse_mac(m).map_err(&err))
+            .map(|m| parse_mac(m).map_err(err))
             .transpose()?;
         if mac.is_some() && matches!(driver, NetDriver::Ipvlan(_)) {
             return Err(err(
@@ -1864,12 +1864,20 @@ mod tests {
         assert!(!p.services["db"].depends_on.contains_key("cache"));
         assert!(!p.services["web"].depends_on.contains_key("app"));
         assert_eq!(p.services["late"].depends_on.len(), 4);
-        let o = crate::orchestrator::Orchestrator::new(p);
-        let levels = o.levels(&o.start_order(&[]).unwrap());
-        assert_eq!(levels.len(), 3, "{levels:?}");
-        assert!(levels[0].contains(&"db".to_string()) && levels[0].contains(&"cache".to_string()));
-        assert!(levels[1].contains(&"app".to_string()) && levels[1].contains(&"web".to_string()));
-        assert_eq!(levels[2], vec!["late".to_string()]);
+        // Start order needs the orchestrator, built with `runtime`.
+        #[cfg(feature = "runtime")]
+        {
+            let o = crate::orchestrator::Orchestrator::new(p);
+            let levels = o.levels(&o.start_order(&[]).unwrap());
+            assert_eq!(levels.len(), 3, "{levels:?}");
+            assert!(
+                levels[0].contains(&"db".to_string()) && levels[0].contains(&"cache".to_string())
+            );
+            assert!(
+                levels[1].contains(&"app".to_string()) && levels[1].contains(&"web".to_string())
+            );
+            assert_eq!(levels[2], vec!["late".to_string()]);
+        }
     }
 
     #[test]

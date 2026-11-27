@@ -336,6 +336,7 @@ candidates for new tests.
 | FR-CMP-11 | `alias_bombs_are_refused`, `long_aliased_strings_are_refused`, `nesting_is_capped`, `check::limits_apply`; checked by hand with 20,000 nested defaults and a 44 KB alias file on the reference host |
 | FR-CMP-12 | `nested_merge_keys_are_applied`, `check::tags_and_nested_merges_do_not_hide_anything` |
 | FR-CMP-13 | `check::lists_what_the_host_must_supply`, `resolved_variables_are_checked`, `syntax_errors_have_a_location`, `tags_and_nested_merges_do_not_hide_anything`, `references_and_lenient` |
+| NFR-PLAT-05 | CI job `compose-only` on macOS: clippy and the library tests with `--no-default-features` |
 | FR-CMP-14 | `isolated_env_ignores_the_process_environment` |
 | FR-CLI-21 | `net_dev`, `rates_from_two_samples`, `units`; e2e (stats table and JSON, pod network once); checked by hand with a kiri container and a CPU limited container (throttling at 100%) |
 | FR-PLUG-01 | `manifests_and_overrides`, `writable_manifest_is_refused` |

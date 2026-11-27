@@ -253,6 +253,7 @@ Priority: **M** must, **S** should, **C** could.
 | NFR-PLAT-01 | Gantry shall run on Linux only, as root. Rootless operation is not supported. |
 | NFR-PLAT-02 | Reference platform: Debian 13, kernel 6.12 or later, with nftables. Other current distributions with the same kernel features are expected to work. |
 | NFR-PLAT-03 | Required host tools: `nft` for pods with a firewall. At least one engine: Docker Engine with API 1.43 or later (annotations), or kiri 0.2 with the `ns:<path>` patch. The `docker` CLI only for projects that use `build:`. `runc` (or another OCI runtime named by `GANTRY_OCI_RUNTIME`) for Docker. |
+| NFR-PLAT-05 | The library without its default `runtime` feature shall be the compose loader and `compose::check` alone, and shall build and pass its tests on macOS as well as Linux, for callers that validate project files off the host. | S |
 | NFR-PLAT-04 | Gantry shall be distributed as two static-friendly binaries, `gantry` and `gantry-oci`, built with Rust 2024 edition. |
 
 ### 6.2 Security

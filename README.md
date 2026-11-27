@@ -330,9 +330,16 @@ See [docs/runbooks/remote.md](docs/runbooks/remote.md).
 ```sh
 cargo test                                         # unit tests (Linux)
 GANTRY_DEV_HOST=user@host scripts/remote.sh cargo test   # from a Mac
+cargo test --lib --no-default-features             # compose loader and checker only, any OS
 sudo tests/integration/run.sh                      # live tests; see the script header
 scripts/package.sh                                 # Debian package
 ```
+
+A program that only needs to read or check project files, such as a
+server validating them off the host, depends on `gantry` with
+`default-features = false`. That leaves out the runtime (namespaces,
+netlink, engines, the CLI), and the result builds on macOS. It provides
+`compose::load` and `compose::check`.
 
 See [docs/compose-spec.md](docs/compose-spec.md) for the file format,
 and [docs/](docs/README.md) for requirements, design, test plan and runbooks.

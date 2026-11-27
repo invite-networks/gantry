@@ -16,33 +16,46 @@ path = "src/lib.rs"
 [[bin]]
 name = "gantry"
 path = "src/bin/gantry.rs"
+required-features = ["runtime"]
 
 [[bin]]
 name = "gantry-oci"
 path = "src/bin/gantry-oci.rs"
+required-features = ["runtime"]
+
+[features]
+default = ["runtime"]
+# Everything that runs pods: namespaces, netlink, engines, the CLI. Without
+# it the library is the compose loader and checker only, which builds on
+# macOS for callers that validate project files off the host.
+runtime = [
+    "dep:clap", "dep:dhcproto", "dep:futures-util", "dep:rtnetlink", "dep:tokio",
+    "dep:tokio-util", "dep:tracing-subscriber", "dep:bollard", "dep:base64",
+    "dep:clap_complete", "dep:clap_mangen", "dep:libc",
+]
 
 [dependencies]
-clap = { version = "4.6", features = ["derive", "env"] }
-dhcproto = "0.15"
+clap = { version = "4.6", features = ["derive", "env"], optional = true }
+dhcproto = { version = "0.15", optional = true }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 nix = { version = "0.32", features = ["sched", "mount", "fs", "process", "signal", "hostname", "user", "socket", "net", "uio", "term", "ioctl"] }
-futures-util = "0.3"
-rtnetlink = "0.24"
+futures-util = { version = "0.3", optional = true }
+rtnetlink = { version = "0.24", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1"
 thiserror = "2"
 toml = "0.9"
-tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-util = { version = "0.7", optional = true }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-bollard = { version = "0.21", default-features = false, features = ["pipe"] }
-base64 = "0.23"
-clap_complete = "4"
-clap_mangen = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+bollard = { version = "0.21", default-features = false, features = ["pipe"], optional = true }
+base64 = { version = "0.23", optional = true }
+clap_complete = { version = "4", optional = true }
+clap_mangen = { version = "0.3", optional = true }
 serde_norway = "0.9"
 
 [dev-dependencies]

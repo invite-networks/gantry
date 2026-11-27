@@ -8,16 +8,24 @@
     deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
 )]
 
+#[cfg(feature = "runtime")]
 pub mod boot;
 pub mod compose;
+#[cfg(feature = "runtime")]
 pub mod datamove;
 pub mod errors;
+#[cfg(feature = "runtime")]
 pub mod firewall;
+#[cfg(feature = "runtime")]
 pub mod heal;
+#[cfg(feature = "runtime")]
 pub mod installed;
+#[cfg(feature = "runtime")]
 pub mod pod;
 pub mod project;
+#[cfg(feature = "runtime")]
 pub mod redact;
+#[cfg(feature = "runtime")]
 pub mod util;
 
 pub use errors::{Error, Result};
@@ -26,8 +34,13 @@ pub use errors::{Error, Result};
 /// such as gantry-agent check for a name here rather than comparing
 /// version numbers.
 pub const FEATURES: &[&str] = &["health_on_failure", "supervise", "plugins"];
+#[cfg(feature = "runtime")]
 pub mod engine;
+#[cfg(feature = "runtime")]
 pub mod oci;
+#[cfg(feature = "runtime")]
 pub mod orchestrator;
+#[cfg(feature = "runtime")]
 pub mod plugin;
+#[cfg(feature = "runtime")]
 pub mod stats;

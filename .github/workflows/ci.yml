@@ -21,6 +21,18 @@ jobs:
       - run: cargo install cargo-audit --locked && cargo audit
       - uses: EmbarkStudios/cargo-deny-action@v2
 
+  # The compose loader and checker alone, without the runtime, as callers
+  # that validate project files off the host build it.
+  compose-only:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --lib --tests --no-default-features -- -D warnings
+      - run: cargo test --lib --no-default-features
+
   # Live tests on the runner's Docker, using the isolated DHCP lab bridge as
   # the pods' macvlan parent. kiri is not on the runners; it is covered on
   # the test host.

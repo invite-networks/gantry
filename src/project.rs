@@ -52,16 +52,26 @@ pub struct Project {
     pub volumes: IndexMap<String, Volume>,
     /// `plugins.<name>` blocks. A plugin without one is enabled.
     #[serde(default)]
-    pub plugins: IndexMap<String, crate::plugin::ProjectPlugin>,
+    pub plugins: IndexMap<String, ProjectPlugin>,
+}
+
+/// A project's `plugins.<name>` block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectPlugin {
+    pub enabled: bool,
+    /// Every key besides `enabled`, passed to the plugin as `settings`.
+    pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Project {
+    #[cfg(feature = "runtime")]
     /// Where the last `up` recorded the normalized project, so helpers such
     /// as the DHCP agent can refresh hosts files and firewalls on their own.
     pub fn snapshot_path(name: &str) -> PathBuf {
         crate::pod::state::project_dir(name).join("project.json")
     }
 
+    #[cfg(feature = "runtime")]
     pub fn save_snapshot(&self) -> crate::Result<()> {
         let data = serde_json::to_vec(self).map_err(|e| crate::Error::State(e.to_string()))?;
         let path = Self::snapshot_path(&self.name);
@@ -71,6 +81,7 @@ impl Project {
         crate::util::write_private(&path, &data)
     }
 
+    #[cfg(feature = "runtime")]
     pub fn load_snapshot(name: &str) -> crate::Result<Option<Self>> {
         match std::fs::read(Self::snapshot_path(name)) {
             Ok(b) => serde_json::from_slice(&b)

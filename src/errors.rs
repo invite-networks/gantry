@@ -77,6 +77,7 @@ impl<T> Context<T> for std::result::Result<T, nix::Error> {
     }
 }
 
+#[cfg(feature = "runtime")]
 impl From<rtnetlink::Error> for Error {
     fn from(e: rtnetlink::Error) -> Self {
         Error::Network(format!("netlink: {e}"))
