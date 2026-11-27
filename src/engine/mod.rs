@@ -59,6 +59,105 @@ pub struct Engine {
     client: Arc<OnceCell<Client>>,
 }
 
+/// The image ID before and after a pull ([`Engine::pull_progress`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pulled {
+    pub before: Option<String>,
+    pub after: String,
+}
+
+impl Pulled {
+    pub fn changed(&self) -> bool {
+        self.before.as_deref() != Some(self.after.as_str())
+    }
+}
+
+/// How far a pull is, summed over its layers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PullProgress {
+    pub layers: usize,
+    /// Layers fully downloaded and unpacked, or already present.
+    pub done: usize,
+    /// Bytes downloaded so far, of `total` known so far.
+    pub downloaded: u64,
+    pub total: u64,
+    /// True once every layer is downloaded and some are still unpacking.
+    pub extracting: bool,
+}
+
+#[derive(Debug, Default)]
+struct Layer {
+    current: u64,
+    total: u64,
+    downloaded: bool,
+    done: bool,
+}
+
+/// Per-layer state from the engine's pull messages.
+#[derive(Debug, Default)]
+struct Layers(indexmap::IndexMap<String, Layer>);
+
+impl Layers {
+    /// Records one message. Returns true when the sums changed.
+    fn update(&mut self, id: &str, status: &str, current: Option<i64>, total: Option<i64>) -> bool {
+        let known = matches!(
+            status,
+            "Pulling fs layer"
+                | "Waiting"
+                | "Downloading"
+                | "Verifying Checksum"
+                | "Download complete"
+                | "Extracting"
+                | "Pull complete"
+                | "Already exists"
+        );
+        if !known {
+            return false;
+        }
+        // Only ids the engine introduced as layers count. Newer engines
+        // also report blobs that are not layers (the image config) as
+        // complete.
+        let starts = matches!(
+            status,
+            "Pulling fs layer" | "Waiting" | "Downloading" | "Already exists"
+        );
+        if !starts && !self.0.contains_key(id) {
+            return false;
+        }
+        let l = self.0.entry(id.to_string()).or_default();
+        match status {
+            "Downloading" => {
+                l.current = current.unwrap_or(0).max(0) as u64;
+                l.total = total.unwrap_or(0).max(0) as u64;
+            }
+            "Verifying Checksum" | "Download complete" => {
+                l.downloaded = true;
+                l.current = l.total;
+            }
+            "Extracting" => l.downloaded = true,
+            "Pull complete" | "Already exists" => {
+                l.downloaded = true;
+                l.done = true;
+                l.current = l.total;
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn progress(&self) -> PullProgress {
+        let layers = self.0.len();
+        let done = self.0.values().filter(|l| l.done).count();
+        PullProgress {
+            layers,
+            done,
+            downloaded: self.0.values().map(|l| l.current.min(l.total)).sum(),
+            total: self.0.values().map(|l| l.total).sum(),
+            extracting: layers > 0 && done < layers && self.0.values().all(|l| l.downloaded),
+        }
+    }
+}
+
 /// One reading of a container's resource counters ([`Engine::sample`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Sample {
@@ -245,6 +344,21 @@ impl Engine {
     /// Pulls an image, with registry credentials from the usual auth
     /// files when there are any.
     pub async fn pull(&self, image: &str, platform: Option<&str>) -> Result<()> {
+        self.pull_progress(image, platform, &|_| {})
+            .await
+            .map(|_| ())
+    }
+
+    /// [`Engine::pull`], telling `progress` how far it is as layers arrive,
+    /// and returning the image ID before and after, so a caller can say
+    /// whether the image changed.
+    pub async fn pull_progress(
+        &self,
+        image: &str,
+        platform: Option<&str>,
+        progress: &(dyn Fn(PullProgress) + Send + Sync),
+    ) -> Result<Pulled> {
+        let before = self.image_id(image).await?;
         let (name, tag) = auth::split_reference(image);
         let creds = auth::credentials_for(self.kind, &name).await;
         let d = self.docker().await?;
@@ -256,6 +370,7 @@ impl Engine {
         };
         let mut stream = d.create_image(Some(opts), None, creds);
         let mut last = String::new();
+        let mut layers = Layers::default();
         while let Some(item) = stream.next().await {
             let info = item.map_err(|e| self.err(&format!("pull {image}"), e))?;
             if let Some(detail) = info.error_detail.and_then(|d| d.message) {
@@ -265,8 +380,14 @@ impl Engine {
                 )));
             }
             if let Some(s) = info.status {
-                if info.id.is_none() {
-                    last = s;
+                match info.id {
+                    None => last = s,
+                    Some(id) => {
+                        let detail = info.progress_detail.unwrap_or_default();
+                        if layers.update(&id, &s, detail.current, detail.total) {
+                            progress(layers.progress());
+                        }
+                    }
                 }
             }
         }
@@ -286,7 +407,8 @@ impl Engine {
                 }
             )));
         }
-        Ok(())
+        let after = self.image_id(image).await?.unwrap_or_default();
+        Ok(Pulled { before, after })
     }
 
     pub async fn create(
@@ -542,12 +664,26 @@ impl Engine {
         tail: Option<&str>,
         timestamps: bool,
     ) -> Result<LogStream> {
+        self.logs_since(name, follow, tail, timestamps, None).await
+    }
+
+    /// [`Engine::logs`] from `since` (Unix seconds) on.
+    pub async fn logs_since(
+        &self,
+        name: &str,
+        follow: bool,
+        tail: Option<&str>,
+        timestamps: bool,
+        since: Option<i64>,
+    ) -> Result<LogStream> {
         let opts = LogsOptions {
             follow,
             stdout: true,
             stderr: true,
             timestamps,
             tail: tail.unwrap_or("all").to_string(),
+            // Unix seconds; 0 means from the start.
+            since: since.and_then(|s| i32::try_from(s).ok()).unwrap_or(0),
             ..Default::default()
         };
         let kind = self.kind;
@@ -665,4 +801,32 @@ async fn socket_alive(path: &std::path::Path) -> bool {
     )
     .await
     .is_ok_and(|r| r.is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_progress_sums_layers() {
+        let mut l = Layers::default();
+        assert!(!l.update("alpine", "Pulling from library/nginx", None, None));
+        // A blob first seen as complete is not a layer.
+        assert!(!l.update("cfg", "Download complete", None, None));
+        l.update("a1", "Pulling fs layer", None, None);
+        l.update("b2", "Already exists", None, None);
+        l.update("a1", "Downloading", Some(512), Some(2048));
+        let p = l.progress();
+        assert_eq!(
+            (p.layers, p.done, p.downloaded, p.total, p.extracting),
+            (2, 1, 512, 2048, false)
+        );
+        l.update("a1", "Download complete", None, None);
+        l.update("a1", "Extracting", Some(100), Some(2048));
+        assert!(l.progress().extracting);
+        assert_eq!(l.progress().downloaded, 2048);
+        l.update("a1", "Pull complete", None, None);
+        let p = l.progress();
+        assert_eq!((p.done, p.extracting), (2, false));
+    }
 }

@@ -10,6 +10,7 @@ use crate::engine::{ContainerInfo, Engine, Sample};
 use crate::errors::Result;
 use crate::orchestrator::Orchestrator;
 use crate::pod::{self, state};
+use crate::progress::bytes;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -296,22 +297,6 @@ pub fn render(pods: &[PodStats]) -> String {
         out.push_str(&format!("note: {e}\n"));
     }
     out
-}
-
-/// Binary units, as `docker stats` prints them.
-fn bytes(n: u64) -> String {
-    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut v = n as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < units.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{n}B")
-    } else {
-        format!("{v:.1}{}", units[i])
-    }
 }
 
 fn rate(bps: f64) -> String {

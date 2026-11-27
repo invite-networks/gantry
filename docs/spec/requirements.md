@@ -183,7 +183,7 @@ Priority: **M** must, **S** should, **C** could.
 |---|---|---|
 | FR-CLI-01 | `up` shall pull or build missing images, create volumes, create pods, apply hosts files and firewalls, then create and start services in dependency order. Options: `-d`, `--wait`, `--force-recreate`, `--pull`, `--build`, wait timeout, service list. | M |
 | FR-CLI-02 | A second `up` with no changes shall not recreate any container or pod. Changes are detected through a configuration hash label. | M |
-| FR-CLI-03 | `up` without `-d` shall follow logs and stop services on interrupt while leaving pods up. | M |
+| FR-CLI-03 | `up` without `-d` shall follow logs from the moment it started, so output services print while they start is shown and kept containers do not replay their history, and stop services on interrupt while leaving pods up. | M |
 | FR-CLI-04 | `down` shall remove containers in reverse dependency order, then pods (namespaces, links, DHCP leases, state). `-v` also removes named volumes. `-t` sets the stop timeout. | M |
 | FR-CLI-05 | `ps`, `logs [-f] [--tail N]`, `exec [-T] [-u] [-w] [-e]`, `start`, `stop`, `restart` and `pull` shall behave as their `docker compose` counterparts. | M |
 | FR-CLI-06 | `config` shall validate and print the normalized project, with `--services`, `--pods` and `--json`. | M |
@@ -201,6 +201,9 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CLI-19 | When the installed `/usr/bin/gantry` runs as a non-root member of the `gantry` group, it shall run itself again through `sudo -n` with the same arguments and working directory, except for `completion` and `internal` helpers. A non-member without root shall be told to run it as root or join the group. | M |
 | FR-CLI-20 | `plugin ls` shall list installed plugins, their hooks and modes, the address source they provide, and whether each is enabled on the host and for the project in the current directory. | S |
 | FR-CLI-21 | `stats [--no-stream] [--json] [--interval N] [svc...]` shall show, per running container, CPU use as a percent of one CPU with its limit and the share of scheduler periods throttled, memory without reclaimable cache against its limit, process count and block I/O rates, and per pod the sum of those plus the network rates of the pod's interfaces (loopback excluded), counted once. Figures come from two readings `--interval` seconds apart. A container whose engine reports no figures shall show `-` and a note. | S |
+| FR-CLI-22 | `logs -f`, and the logs `up` follows, shall keep following a service whose container stops, restarts or is recreated, resuming with the new run. | M |
+| FR-CLI-23 | `pull`, and the pulls `up` makes, shall show one line per image: download progress by bytes and layers on a terminal, and a final line saying whether the image was updated (old and new ID), was already up to date, or was pulled new. Without a terminal only the final lines are printed. | S |
+| FR-CLI-24 | `-f FILE` shall be accepted before the command only, so commands keep their own `-f` (`logs -f`, `rm -f`). | M |
 | FR-CLI-16 | Services in the same dependency level shall be created and started in parallel; `down` and `stop` shall act on reverse levels in parallel; pulls shall run in parallel. | M |
 
 ### 5.9 State and lifecycle
@@ -214,6 +217,7 @@ Priority: **M** must, **S** should, **C** could.
 | FR-ST-07 | Service `priority` (default 100, lower first) shall order services inside their pod as implied `depends_on` (healthy when the lower service has a healthcheck, else started). Equal priorities start together. A lower-priority service depending on a higher one in the same pod shall be rejected. | M |
 | FR-ST-04 | A container restarted by its engine (restart policy or manual restart) shall rejoin its pod. | M |
 | FR-ST-05 | A service without `restart:` shall get `unless-stopped`. `restart: "no"` shall opt out. One-off `run` containers never get a restart policy. | M |
+| FR-ST-08 | A registry entry shall hold the options a project is loaded with at boot. `boot::register_with` with `isolated_env` shall make boot load the project as `LoadOptions::isolated_env` does. A plain `register` (`gantry up`) shall add a default entry and leave an existing one, and its options, unchanged. An entry boot cannot read shall stop that project with an error rather than start it with other options. `boot ls` shall show each project's mode. | M |
 
 ### 5.10 Self-healing
 
@@ -296,7 +300,6 @@ spent waiting on DHCP servers or healthchecks.
 | NFR-REL-02 | A stale namespace left by a crash shall be replaced on the next `up`. |
 | NFR-REL-03 | The DHCP agent shall survive transient errors and keep retrying. |
 | NFR-REL-04 | Engine API calls shall have explicit timeouts, except log following and attached exec sessions. |
-| FR-ST-04 | A registry entry shall hold the options a project is loaded with at boot. `boot::register_with` with `isolated_env` shall make boot load the project as `LoadOptions::isolated_env` does. A plain `register` (`gantry up`) shall add a default entry and leave an existing one, and its options, unchanged. An entry boot cannot read shall stop that project with an error rather than start it with other options. `boot ls` shall show each project's mode. | M |
 | NFR-REL-05 | A DHCP agent shall not depend on the process or service that started it: under systemd it runs in its own transient scope, so stopping or restarting the caller (the CLI, `gantry-boot.service`, or a library caller such as gantry-agent) leaves it running. |
 
 ### 6.5 Operability

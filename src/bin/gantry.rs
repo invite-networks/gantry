@@ -30,8 +30,10 @@ struct Cli {
 
 #[derive(Args, Clone)]
 struct Global {
-    /// Compose file(s). Default: gantry.yaml, compose.yaml or docker-compose.yaml
-    #[arg(short = 'f', long = "file", global = true)]
+    /// Compose file(s). Default: gantry.yaml, compose.yaml or docker-compose.yaml.
+    /// Given before the command, as with `docker compose -f FILE logs -f`:
+    /// after it, `-f` is the command's own (`logs -f` follows, `rm -f` forces).
+    #[arg(short = 'f', long = "file")]
     files: Vec<PathBuf>,
     /// Project name
     #[arg(short = 'p', long = "project-name", global = true)]
@@ -611,6 +613,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 wait: a.wait,
                 build: a.build,
             };
+            // Logs are shown from here, so what containers print while
+            // they start is not lost, and kept containers do not replay
+            // their history.
+            let started = now_secs();
             o.up(&opts).await?;
             if a.detach {
                 // Installed projects come back at boot (gantry-boot.service).
@@ -624,7 +630,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             );
             let services = o.start_order(&a.services)?;
             tokio::select! {
-                r = logs(&o, &services, true, Some("0".into()), false) => r?,
+                r = logs(&o, &services, true, None, false, Some(started)) => r?,
                 _ = tokio::signal::ctrl_c() => {}
             }
             println!();
@@ -660,7 +666,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 services
             };
             tokio::select! {
-                r = logs(&o, &services, follow, tail, timestamps) => r?,
+                r = logs(&o, &services, follow, tail, timestamps, None) => r?,
                 _ = tokio::signal::ctrl_c() => {}
             }
             Ok(ExitCode::SUCCESS)
@@ -913,29 +919,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 services
             };
             let mut svcs = Vec::new();
+            let mut seen = std::collections::HashSet::new();
             for s in &list {
                 let svc = o
                     .project
                     .services
                     .get(s)
                     .ok_or_else(|| Error::config(format!("no such service {s:?}")))?;
-                if svc.build.is_none() {
+                // Each image once per engine; built images are not pulled.
+                if svc.build.is_none() && seen.insert((svc.runtime, svc.image.clone())) {
                     svcs.push(svc);
                 }
             }
-            futures_util::future::try_join_all(svcs.iter().map(|svc| {
-                let o = &o;
-                async move {
-                    println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
-                    let t = std::time::Instant::now();
-                    o.engine(svc.runtime)
-                        .pull(&svc.image, svc.platform.as_deref())
-                        .await?;
-                    println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
-                    Ok::<(), Error>(())
-                }
-            }))
-            .await?;
+            o.pull_services(&svcs).await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Build { services } => {
@@ -1259,9 +1255,8 @@ async fn logs(
     follow: bool,
     tail: Option<String>,
     timestamps: bool,
+    since: Option<i64>,
 ) -> Result<()> {
-    use futures_util::StreamExt;
-    use gantry::engine::LogOutput;
     let width = services.iter().map(String::len).max().unwrap_or(0);
     let mut tasks = Vec::new();
     for name in services {
@@ -1270,34 +1265,38 @@ async fn logs(
             .services
             .get(name)
             .ok_or_else(|| Error::config(format!("no such service {name:?}")))?;
-        let mut stream = o
-            .engine(svc.runtime)
-            .logs(&svc.container_name, follow, tail.as_deref(), timestamps)
+        let engine = o.engine(svc.runtime).clone();
+        let container = svc.container_name.clone();
+        // The first stream is opened here, so a missing container is an
+        // error now rather than silence.
+        let first = engine
+            .logs_since(&container, follow, tail.as_deref(), timestamps, since)
             .await?;
         let prefix = format!("{name:<width$} | ");
         tasks.push(tokio::spawn(async move {
-            // Chunks need not end at line breaks; keep the partial line of
-            // each stream until it is complete.
-            let mut out_buf: Vec<u8> = Vec::new();
-            let mut err_buf: Vec<u8> = Vec::new();
-            while let Some(Ok(chunk)) = stream.next().await {
-                let (buf, bytes) = match chunk {
-                    LogOutput::StdErr { message } => (&mut err_buf, message),
-                    LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                        (&mut out_buf, message)
-                    }
-                    LogOutput::StdIn { .. } => continue,
-                };
-                buf.extend_from_slice(&bytes);
-                while let Some(i) = buf.iter().position(|b| *b == b'\n') {
-                    let line: Vec<u8> = buf.drain(..=i).collect();
-                    let text = String::from_utf8_lossy(&line);
-                    println!("{prefix}{}", text.trim_end_matches(['\n', '\r']));
+            let mut stream = first;
+            loop {
+                print_stream(&mut stream, &prefix).await;
+                if !follow {
+                    break;
                 }
-            }
-            for buf in [out_buf, err_buf] {
-                if !buf.is_empty() {
-                    println!("{prefix}{}", String::from_utf8_lossy(&buf));
+                // The container stopped, restarted or was recreated. Wait for
+                // it to run again and follow the new run from here on, as
+                // `docker compose logs -f` does.
+                let resumed = now_secs();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if matches!(engine.inspect(&container).await, Ok(Some(c)) if c.status == "running")
+                    {
+                        break;
+                    }
+                }
+                match engine
+                    .logs_since(&container, true, None, timestamps, Some(resumed))
+                    .await
+                {
+                    Ok(s) => stream = s,
+                    Err(_) => continue,
                 }
             }
         }));
@@ -1306,6 +1305,43 @@ async fn logs(
         let _ = t.await;
     }
     Ok(())
+}
+
+/// Prints one log stream with a service prefix until it ends. Chunks need
+/// not end at line breaks, so each stream keeps its partial line until it
+/// is complete.
+async fn print_stream(stream: &mut gantry::engine::LogStream, prefix: &str) {
+    use futures_util::StreamExt;
+    use gantry::engine::LogOutput;
+    let mut out_buf: Vec<u8> = Vec::new();
+    let mut err_buf: Vec<u8> = Vec::new();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let (buf, bytes) = match chunk {
+            LogOutput::StdErr { message } => (&mut err_buf, message),
+            LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                (&mut out_buf, message)
+            }
+            LogOutput::StdIn { .. } => continue,
+        };
+        buf.extend_from_slice(&bytes);
+        while let Some(i) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=i).collect();
+            let text = String::from_utf8_lossy(&line);
+            println!("{prefix}{}", text.trim_end_matches(['\n', '\r']));
+        }
+    }
+    for buf in [out_buf, err_buf] {
+        if !buf.is_empty() {
+            println!("{prefix}{}", String::from_utf8_lossy(&buf));
+        }
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 async fn setup_docker(

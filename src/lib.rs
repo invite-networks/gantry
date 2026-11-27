@@ -43,4 +43,6 @@ pub mod orchestrator;
 #[cfg(feature = "runtime")]
 pub mod plugin;
 #[cfg(feature = "runtime")]
+pub mod progress;
+#[cfg(feature = "runtime")]
 pub mod stats;

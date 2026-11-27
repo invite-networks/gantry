@@ -666,22 +666,66 @@ impl Orchestrator {
                 }
             }
         }
-        try_join_all(pulls.iter().map(|svc| async move {
-            println!("Pulling {} for {} ({})", svc.image, svc.name, svc.runtime);
-            let t = std::time::Instant::now();
-            self.engine(svc.runtime)
-                .pull(&svc.image, svc.platform.as_deref())
-                .await?;
-            println!("Pulled {} in {:.1}s", svc.image, t.elapsed().as_secs_f32());
-            Ok::<(), Error>(())
-        }))
-        .await?;
+        self.pull_services(&pulls).await?;
         for svc in builds {
             println!("Building {} for {} ({})", svc.image, svc.name, svc.runtime);
             self.engine(svc.runtime)
                 .build(svc, &self.project.name)
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Pulls the services' images in parallel, one status line per image
+    /// that shows download progress on a terminal and ends by saying
+    /// whether the image changed.
+    pub async fn pull_services(&self, svcs: &[&Service]) -> Result<()> {
+        use crate::progress::{Board, bytes, short_id};
+        let board = Board::default();
+        let board = &board;
+        try_join_all(svcs.iter().map(|svc| async move {
+            let label = format!("{} ({}, {})", svc.image, svc.name, svc.runtime);
+            let i = board.add(format!("{label}: pulling"));
+            let started = std::time::Instant::now();
+            let report = |p: crate::engine::PullProgress| {
+                let what = if p.extracting {
+                    format!("extracting, {}/{} layers", p.done, p.layers)
+                } else if p.total > 0 {
+                    format!(
+                        "{} / {}, {}/{} layers",
+                        bytes(p.downloaded),
+                        bytes(p.total),
+                        p.done,
+                        p.layers
+                    )
+                } else {
+                    format!("{}/{} layers", p.done, p.layers)
+                };
+                board.set(i, format!("{label}: {what}"));
+            };
+            let pulled = self
+                .engine(svc.runtime)
+                .pull_progress(&svc.image, svc.platform.as_deref(), &report)
+                .await;
+            let secs = started.elapsed().as_secs_f32();
+            match pulled {
+                Ok(p) => {
+                    let after = short_id(&p.after);
+                    let what = match (&p.before, p.changed()) {
+                        (_, false) => format!("up to date ({after})"),
+                        (Some(b), true) => format!("updated {} -> {after}", short_id(b)),
+                        (None, true) => format!("pulled ({after})"),
+                    };
+                    board.finish(i, format!("{label}: {what} in {secs:.1}s"));
+                    Ok(())
+                }
+                Err(e) => {
+                    board.finish(i, format!("{label}: failed"));
+                    Err(e)
+                }
+            }
+        }))
+        .await?;
         Ok(())
     }
 

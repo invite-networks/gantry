@@ -140,12 +140,12 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 | `run [--rm] [-T] [--no-deps] [-e K=V] [-u U] [-w DIR] [--entrypoint E] svc [cmd...]` | Run a one-off container of a service in its pod, attached. Exits with the container's exit code. |
 | `exec [-T] [-u U] [-w DIR] [-e K=V] svc cmd...` | Run a command in a running service. |
 | `ps` | Services, their pod, runtime and state. |
-| `logs [-f] [--tail N] [-t] [svc...]` | Logs, prefixed by service. |
+| `logs [-f] [--tail N] [-t] [svc...]` | Logs, prefixed by service. `-f` keeps following through restarts and recreates. |
 | `start`, `stop`, `restart [svc...]` | Start or stop services; pods stay up. |
 | `kill [-s SIG] [svc...]`, `rm [-s] [svc...]` | Signal services; remove stopped service containers. |
 | `top [svc...]` | Processes in each service. |
 | `stats [--no-stream] [--json] [--interval N] [svc...]` | CPU (with the limit and how often it throttles), memory against its limit, processes and disk I/O per container, summed per pod, plus each pod's network traffic. Live until Ctrl-C. |
-| `build [svc...]`, `pull [svc...]` | Build or pull images. Pulls run in parallel. |
+| `build [svc...]`, `pull [svc...]` | Build or pull images. Pulls run in parallel, one line per image with its download progress on a terminal, ending in `updated old -> new`, `up to date` or `pulled`. |
 | `config [--services\|--pods\|--json]` | Validate and print the normalized project. Values that look like secrets print as `<redacted>`. |
 | `data move [--dry-run] [--passes N] [--no-xattrs] [--force] [svc...]` | Move data to the paths the project file now names: live rsync passes, a short stop for the final pass and a checksum check, then the services are recreated on the new path. The old data is kept. |
 | `ls` | Projects with pods on this host. |
@@ -156,8 +156,12 @@ they talk over loopback. Other machines reach the pod at 192.168.10.50.
 | `supervise` | Watch every engine and act on unhealthy services that set `health_on_failure`. Runs as `gantry-supervise.service`. |
 | `version`, `completion SHELL` | Versions of Gantry and each engine, and the features this build supports; shell completions. |
 
-Global flags: `-f FILE` (repeatable), `-p NAME`, `--project-directory`,
+Global flags: `-f FILE` (repeatable, before the command, as with
+`docker compose -f FILE logs -f`), `-p NAME`, `--project-directory`,
 `--env-file`, `--profile`, `--runtime docker|kiri`, `--log-level`.
+
+`up` without `-d` shows what every service prints from the moment `up`
+starts, its startup output included, then keeps following until Ctrl-C.
 
 ## How it works
 

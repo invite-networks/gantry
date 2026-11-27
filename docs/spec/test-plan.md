@@ -337,7 +337,10 @@ candidates for new tests.
 | FR-CMP-12 | `nested_merge_keys_are_applied`, `check::tags_and_nested_merges_do_not_hide_anything` |
 | FR-CMP-13 | `check::lists_what_the_host_must_supply`, `resolved_variables_are_checked`, `syntax_errors_have_a_location`, `tags_and_nested_merges_do_not_hide_anything`, `references_and_lenient` |
 | NFR-PLAT-05 | CI job `compose-only` on macOS: clippy and the library tests with `--no-default-features` |
-| FR-ST-04 | `registry_round_trip` (options recorded, kept by a plain register, isolated load ignores a variable set in the boot environment, unreadable entry stops the project) |
+| FR-CLI-03, FR-CLI-22 | Checked by hand on the reference host: attached `up` shows each service's first line, and `logs -f` resumes after `gantry restart` |
+| FR-CLI-23 | `pull_progress_sums_layers`, `plain_output_keeps_only_final_lines`; checked by hand: updated, up to date and pulled lines, and progress on a terminal with two images in parallel |
+| FR-CLI-24 | Checked by hand: `gantry logs -f` follows and `gantry -f FILE ps` reads FILE, in a debug build (clap's debug checks) |
+| FR-ST-08 | `registry_round_trip` (options recorded, kept by a plain register, isolated load ignores a variable set in the boot environment, unreadable entry stops the project) |
 | FR-CMP-14 | `isolated_env_ignores_the_process_environment` |
 | FR-CLI-21 | `net_dev`, `rates_from_two_samples`, `units`; e2e (stats table and JSON, pod network once); checked by hand with a kiri container and a CPU limited container (throttling at 100%) |
 | FR-PLUG-01 | `manifests_and_overrides`, `writable_manifest_is_refused` |
