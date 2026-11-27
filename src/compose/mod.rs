@@ -480,10 +480,11 @@ mod budget_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("compose.yaml"),
-            "name: iso\nservices:\n  a:\n    image: \"img${HOME}\"\n    network_mode: none\n    command: [\"${FROM_VARS}\", \"${FROM_DOTENV}\"]\n",
+            "name: iso\nservices:\n  a:\n    image: \"img${HOME}\"\n    network_mode: none\n    env_file: app.env\n    command: [\"${FROM_VARS}\", \"${FROM_DOTENV}\"]\n",
         )
         .unwrap();
         std::fs::write(dir.path().join(".env"), "FROM_DOTENV=d\nFROM_VARS=lost\n").unwrap();
+        std::fs::write(dir.path().join("app.env"), "FROM_ENV_FILE=e\n").unwrap();
         let opts = |isolated| LoadOptions {
             cwd: Some(dir.path().to_path_buf()),
             vars: [("FROM_VARS".to_string(), "v".to_string())].into(),
@@ -495,6 +496,14 @@ mod budget_tests {
         assert_eq!(
             p.services["a"].command.as_deref(),
             Some(&["v".to_string(), "d".to_string()][..])
+        );
+        // .env and env_file are still read; vars wins over .env.
+        assert_eq!(
+            p.services["a"]
+                .environment
+                .get("FROM_ENV_FILE")
+                .map(String::as_str),
+            Some("e")
         );
         // Without isolation the process environment fills ${HOME}.
         let p = load(&opts(false)).unwrap().project;

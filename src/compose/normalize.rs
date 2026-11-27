@@ -1445,6 +1445,11 @@ fn build_spec(
     })
 }
 
+/// Why a `~/` path is refused when the process environment is not used.
+pub(crate) fn home_refused(p: &str) -> String {
+    format!("{p}: ~/ paths are not allowed here; use a path relative to the project")
+}
+
 fn resolve_path(ctx: &Ctx<'_>, p: &str) -> std::result::Result<PathBuf, String> {
     if let Some(rest) = p.strip_prefix("~/") {
         match ctx.home {
@@ -1453,11 +1458,7 @@ fn resolve_path(ctx: &Ctx<'_>, p: &str) -> std::result::Result<PathBuf, String> 
                     return Ok(PathBuf::from(home).join(rest));
                 }
             }
-            Home::Refuse => {
-                return Err(format!(
-                    "{p}: ~/ paths are not allowed here; use a path relative to the project"
-                ));
-            }
+            Home::Refuse => return Err(home_refused(p)),
             Home::Keep => return Ok(PathBuf::from(p)),
         }
     }

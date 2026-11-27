@@ -36,6 +36,9 @@ pub struct CheckOptions<'a> {
     /// Values for `${VAR}`. A lookup that resolves nothing checks the file
     /// as written.
     pub lookup: &'a dyn Fn(&str) -> Option<String>,
+    /// Check as `LoadOptions::isolated_env` loads: each `~/` path in a
+    /// volume source, build context or `env_file` is an issue.
+    pub isolated_env: bool,
 }
 
 /// One problem with the text.
@@ -173,6 +176,12 @@ fn run(text: &str, opts: &CheckOptions<'_>, checked: &mut Checked) -> Result<(),
     interpolate::interpolate_value_lenient(&mut doc, &lookup, "")
         .map_err(|(path, e)| vec![issue(e, Some(path))])?;
 
+    let home_issues = if opts.isolated_env {
+        home_paths(&doc)
+    } else {
+        vec![]
+    };
+
     let profiles = match &opts.profiles {
         CheckProfiles::Only(p) => p.clone(),
         CheckProfiles::All => all_profiles(&doc),
@@ -188,11 +197,74 @@ fn run(text: &str, opts: &CheckOptions<'_>, checked: &mut Checked) -> Result<(),
         read_env_files: false,
         home: Home::Keep,
     };
-    let (project, warnings) =
-        normalize::normalize(file, &ctx).map_err(|e| vec![issue(e.to_string(), None)])?;
+    let (project, warnings) = match normalize::normalize(file, &ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            let mut all = home_issues;
+            all.push(issue(e.to_string(), None));
+            return Err(all);
+        }
+    };
     checked.project = Some(project.name);
     checked.warnings = warnings;
-    Ok(())
+    if home_issues.is_empty() {
+        Ok(())
+    } else {
+        Err(home_issues)
+    }
+}
+
+/// Each `~/` path an isolated load refuses, after substitution.
+fn home_paths(doc: &Value) -> Vec<Issue> {
+    let mut out = Vec::new();
+    let mut flag = |p: &str, path: String| {
+        if p.starts_with("~/") {
+            out.push(issue(normalize::home_refused(p), Some(path)));
+        }
+    };
+    let services = doc
+        .as_mapping()
+        .and_then(|m| get(m, "services"))
+        .and_then(Value::as_mapping);
+    for (name, svc) in services.into_iter().flatten() {
+        let name = key_str(name).unwrap_or("?");
+        let Some(svc) = svc.as_mapping() else {
+            continue;
+        };
+        let volumes = get(svc, "volumes").and_then(Value::as_sequence);
+        for (i, v) in volumes.into_iter().flatten().map(untag).enumerate() {
+            let at = format!("services.{name}.volumes[{i}]");
+            match v {
+                Value::String(s) => flag(s.split(':').next().unwrap_or(""), at),
+                Value::Mapping(m) => {
+                    if let Some(src) = get(m, "source").and_then(Value::as_str) {
+                        flag(src, format!("{at}.source"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        match get(svc, "build") {
+            Some(Value::String(c)) => flag(c, format!("services.{name}.build")),
+            Some(Value::Mapping(b)) => {
+                if let Some(c) = get(b, "context").and_then(Value::as_str) {
+                    flag(c, format!("services.{name}.build.context"));
+                }
+            }
+            _ => {}
+        }
+        if let Some(env_file) = get(svc, "env_file") {
+            for (i, f) in env_file_paths(env_file).iter().enumerate() {
+                let at = if env_file.is_string() {
+                    format!("services.{name}.env_file")
+                } else {
+                    format!("services.{name}.env_file[{i}]")
+                };
+                flag(f, at);
+            }
+        }
+    }
+    out
 }
 
 /// A value in a mapping by key, seeing through a tag on the key.
@@ -316,6 +388,7 @@ mod tests {
                 project_name: None,
                 profiles: CheckProfiles::All,
                 lookup: &none,
+                isolated_env: false,
             },
         )
     }
@@ -364,12 +437,53 @@ services:
                 project_name: None,
                 profiles: CheckProfiles::All,
                 lookup: &stand_ins,
+                isolated_env: false,
             },
         );
         assert!(c.issues.is_empty(), "{:?}", c.issues);
         assert_eq!(c.project.as_deref(), Some("shop"));
         assert_eq!(c.variables_without_default, ["LAN_PARENT", "WEB_IP"]);
         assert_eq!(c.network_parents, ["eth9", "vlan30"]);
+    }
+
+    #[test]
+    fn isolated_matches_isolated_load() {
+        let file = "name: h\nservices:\n  a:\n    image: x\n    network_mode: none\n    volumes: [\"~/data:/data\", { type: bind, source: \"${SRC:-~/s}\", target: /s }]\n    build: { context: ~/ctx }\n    env_file: ~/a.env\n";
+        let opts = |isolated_env| CheckOptions {
+            project_name: None,
+            profiles: CheckProfiles::All,
+            lookup: &|_: &str| None,
+            isolated_env,
+        };
+        let c = check(file, &opts(true));
+        let paths: Vec<_> = c
+            .issues
+            .iter()
+            .map(|i| i.path.as_deref().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "services.a.volumes[0]",
+                "services.a.volumes[1].source",
+                "services.a.build.context",
+                "services.a.env_file"
+            ]
+        );
+        assert!(c.issues[0].message.contains("~/ paths are not allowed"));
+        assert!(check(file, &opts(false)).issues.is_empty());
+
+        // The isolated load refuses the same file with the same words.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("compose.yaml"), file).unwrap();
+        let e = crate::compose::load(&crate::compose::LoadOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            isolated_env: true,
+            ..Default::default()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("~/ paths are not allowed"), "{e}");
     }
 
     #[test]
@@ -385,6 +499,7 @@ services:
                 project_name: Some("other".into()),
                 profiles: CheckProfiles::Only(vec![]),
                 lookup: &vals,
+                isolated_env: false,
             },
         )
         .issues;
