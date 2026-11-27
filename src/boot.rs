@@ -16,7 +16,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// One empty file per registered project, named after it.
+/// One file per registered project, named after it. It holds the
+/// project's [`RegisterOptions`] as JSON, or nothing for the defaults.
 pub fn registry_dir() -> PathBuf {
     std::env::var_os("GANTRY_BOOT_DIR")
         .map(PathBuf::from)
@@ -36,20 +37,59 @@ pub fn installed_name(project_dir: &Path) -> Option<String> {
     same.then_some(name)
 }
 
-/// Registers the project in `project_dir` for boot when it is installed.
-/// Returns its name when this call added it.
+/// How boot loads a registered project, so a restart after a reboot loads
+/// it the way it was deployed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RegisterOptions {
+    /// Load it as `LoadOptions::isolated_env` does: variables only from its
+    /// env files, never the boot service's environment, and no `~/` paths.
+    pub isolated_env: bool,
+}
+
+/// Registers the project in `project_dir` for boot when it is installed,
+/// with the default options. An existing entry, and the options it holds,
+/// is left as it is. Returns its name when this call added it.
 pub fn register(project_dir: &Path) -> Result<Option<String>> {
+    register_entry(project_dir, None)
+}
+
+/// Registers the project with `opts`, replacing the options of an existing
+/// entry. Returns its name when this call added it.
+pub fn register_with(project_dir: &Path, opts: &RegisterOptions) -> Result<Option<String>> {
+    register_entry(project_dir, Some(opts))
+}
+
+fn register_entry(project_dir: &Path, opts: Option<&RegisterOptions>) -> Result<Option<String>> {
     let Some(name) = installed_name(project_dir) else {
         return Ok(None);
     };
     let dir = registry_dir();
     std::fs::create_dir_all(&dir).ctx(|| format!("create {}", dir.display()))?;
     let f = dir.join(&name);
-    if f.exists() {
-        return Ok(None);
+    let existed = f.exists();
+    let text = match opts {
+        None if existed => return Ok(None),
+        None => String::new(),
+        Some(o) => serde_json::to_string(o).map_err(|e| Error::State(e.to_string()))?,
+    };
+    // Written beside the entry and renamed over it, so boot never reads a
+    // half-written file.
+    let tmp = dir.join(format!(".{name}.tmp"));
+    std::fs::write(&tmp, text).ctx(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, &f).ctx(|| format!("write {}", f.display()))?;
+    Ok((!existed).then_some(name))
+}
+
+/// The options a registered project is loaded with. An entry that cannot be
+/// read is an error, so boot does not start the project the wrong way.
+pub fn options(name: &str) -> Result<RegisterOptions> {
+    let f = registry_dir().join(name);
+    let text = std::fs::read_to_string(&f).ctx(|| format!("read {}", f.display()))?;
+    if text.trim().is_empty() {
+        return Ok(RegisterOptions::default());
     }
-    std::fs::write(&f, "").ctx(|| format!("write {}", f.display()))?;
-    Ok(Some(name))
+    serde_json::from_str(&text).map_err(|e| Error::config(format!("{}: {e}", f.display())))
 }
 
 /// Removes the project in `project_dir` from boot. Returns its name when it
@@ -90,6 +130,7 @@ pub fn registered() -> Result<Vec<String>> {
 struct Loaded {
     name: String,
     orch: Orchestrator,
+    isolated: bool,
 }
 
 fn load_all() -> Vec<Loaded> {
@@ -105,8 +146,16 @@ fn load_all() -> Vec<Loaded> {
                 continue;
             }
         };
+        let registered = match options(&name) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("{name}: skipped: {e}");
+                continue;
+            }
+        };
         let opts = LoadOptions {
             cwd: Some(dir),
+            isolated_env: registered.isolated_env,
             ..Default::default()
         };
         match load(&opts) {
@@ -117,6 +166,7 @@ fn load_all() -> Vec<Loaded> {
                 out.push(Loaded {
                     name,
                     orch: Orchestrator::new(l.project),
+                    isolated: registered.isolated_env,
                 });
             }
             Ok(_) => {}
@@ -253,11 +303,19 @@ pub fn plan() -> Result<String> {
         .max()
         .unwrap_or(0)
         .max("PROJECT".len());
-    let mut out = format!("{:<9} {:<width$}  PODS\n", "PRIORITY", "PROJECT");
+    let mut out = format!(
+        "{:<9} {:<width$}  {:<8}  PODS\n",
+        "PRIORITY", "PROJECT", "ENV"
+    );
     for (prio, entries) in levels(&projects) {
         for (i, pods) in entries {
+            let env = if projects[i].isolated {
+                "isolated"
+            } else {
+                "process"
+            };
             out.push_str(&format!(
-                "{prio:<9} {:<width$}  {}\n",
+                "{prio:<9} {:<width$}  {env:<8}  {}\n",
                 projects[i].name,
                 pods.join(",")
             ));
@@ -306,6 +364,37 @@ mod tests {
         assert_eq!(register(&store.join("myapp")).unwrap(), None);
         assert_eq!(register(&d.path().join("elsewhere/other")).unwrap(), None);
         assert_eq!(registered().unwrap(), vec!["myapp".to_string()]);
+        assert_eq!(options("myapp").unwrap(), RegisterOptions::default());
+
+        // register_with records the options, and a later plain register
+        // (a CLI `up`) does not undo them.
+        let iso = RegisterOptions { isolated_env: true };
+        assert_eq!(register_with(&store.join("myapp"), &iso).unwrap(), None);
+        assert!(options("myapp").unwrap().isolated_env);
+        assert_eq!(register(&store.join("myapp")).unwrap(), None);
+        assert!(options("myapp").unwrap().isolated_env);
+        assert_eq!(registered().unwrap(), vec!["myapp".to_string()]);
+
+        // An entry boot cannot read stops that project instead of starting
+        // it with the wrong options.
+        // What boot loads: an isolated entry ignores the boot service's
+        // environment, a default entry takes it, as before.
+        std::fs::write(
+            store.join("myapp/compose.yaml"),
+            "name: myapp\nservices:\n  a: { image: \"img-${GT_BOOT_TEST:-default}\", network_mode: none }\n",
+        )
+        .unwrap();
+        // SAFETY: as above.
+        unsafe { std::env::set_var("GT_BOOT_TEST", "fromenv") };
+        let image = || load_all()[0].orch.project.services["a"].image.clone();
+        assert_eq!(image(), "img-default");
+        assert!(load_all()[0].isolated);
+        register_with(&store.join("myapp"), &RegisterOptions::default()).unwrap();
+        assert_eq!(image(), "img-fromenv");
+
+        std::fs::write(reg.join("myapp"), "{ not json").unwrap();
+        assert!(options("myapp").is_err());
+        assert!(load_all().is_empty());
         assert_eq!(
             unregister(&store.join("myapp")).unwrap().as_deref(),
             Some("myapp")

@@ -288,6 +288,14 @@ sudo gantry --installed myproject up -d   # starts it and registers it
 sudo gantry boot ls                       # the order boot will use
 ```
 
+At boot there is no shell, so put every value a project needs in its
+`.env`. A project registered by `gantry up` is loaded with the boot
+service's environment ahead of `.env`, as before. A library caller can
+register it with `boot::register_with(dir, &RegisterOptions { isolated_env:
+true })`, and boot then loads it from its env files only, the way
+`LoadOptions::isolated_env` does. `gantry up` never undoes that. The `ENV`
+column of `boot ls` shows which.
+
 ## Remote control
 
 Gantry runs on the host it manages. To drive it from elsewhere, the package
