@@ -171,6 +171,10 @@ Priority: **M** must, **S** should, **C** could.
 | FR-CMP-07 | Named volumes shall be created in the service's engine as `<project>_<name>` unless external. | M |
 | FR-CMP-08 | The project name shall come from `name:`, `-p`, `COMPOSE_PROJECT_NAME`, then the directory name. | M |
 | FR-CMP-10 | A service without `cpus` shall get 1 CPU and one without `mem_limit` 2 GiB. `0` shall mean no limit. A negative `cpus` shall be an error. | M |
+| FR-CMP-11 | Before a file is parsed into a tree, it shall be refused past 200,000 values or 4 MiB of keys and scalars once aliases are expanded, without building the expansion. `${...}` shall nest at most 16 deep. Both shall be errors with a location, never a crash. | M |
+| FR-CMP-12 | `<<` merge keys shall be applied until none remain, so keys inside a nested merge source are kept. A file still holding `<<` after 16 passes shall be an error. | M |
+| FR-CMP-13 | `compose::check(text, options)` shall validate compose text with the same rules as loading, reading no file and no process environment. Variables come only from the caller's lookup, and a missing required variable is not an error. It shall return its issues (message, path where known, line and column for syntax errors and limits) together with the variables used without and with a default, the network parents (an entry needing an unresolved variable as written), and the `env_file` entries, the lists filled in even when there are issues. | M |
+| FR-CMP-14 | `LoadOptions.isolated_env` shall take variables, `COMPOSE_PROFILES` and `COMPOSE_PROJECT_NAME` only from `LoadOptions.vars` and the env files, never the process environment, and refuse `~/` paths. `LoadOptions.vars` shall win over every other source. | M |
 | FR-CMP-09 | `build:` shall be supported (context, Dockerfile, args, target and the other Compose build keys) by running `docker build` for Docker services, so BuildKit, `.dockerignore` and build secrets behave as with Compose. For kiri services, the image is built with `docker build` against the kiri socket using the classic builder. | M |
 
 ### 5.8 Command line

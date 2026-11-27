@@ -65,8 +65,13 @@ to start containers inside namespaces that already exist.
 ## 3. Compose loading
 
 1. Locate files (or take `-f` values), read them, merge left to right
-   [FR-CMP-01].
-2. Interpolate variables from the environment and `.env` [FR-CMP-02].
+   [FR-CMP-01]. Before each file is parsed for real, one pass that stores
+   nothing counts its values and text with aliases expanded and refuses it
+   past the limits [FR-CMP-11]. `<<` merge keys are applied until none are
+   left [FR-CMP-12].
+2. Interpolate variables from `LoadOptions.vars`, the environment and
+   `.env`, or without the environment when `isolated_env` is set
+   [FR-CMP-02, FR-CMP-14]. `${...}` nests at most 16 deep [FR-CMP-11].
 3. Deserialize into the raw model and warn on ignored keys [FR-CMP-04].
    `build:` sections are kept for the build step [FR-CMP-09].
 4. Normalize: resolve the project name [FR-CMP-08], apply profiles, place
@@ -76,6 +81,14 @@ to start containers inside namespaces that already exist.
    the first host of its subnet [FR-NET-05, FR-ADDR-02], validate hostnames, DNS options
    and firewall fields [NFR-SEC-03], reject reserved labels [FR-CMP-06] and
    pod settings on pod members [FR-CMP-05].
+
+`compose::check` runs the same steps on text alone [FR-CMP-13]: no files
+are read, variables come only from the caller's lookup, a missing required
+variable becomes empty instead of an error, services' `env_file` entries are
+listed but not read, and `~/` stays as written. It scans every `${...}`
+before substitution, so its lists of variables, network parents and env
+files do not depend on the lookup and survive a failed validation. Walks
+of the raw tree see through YAML tags on keys.
 
 The result is an immutable `Project`. Everything after this step works from
 it. `gantry config` prints it [FR-CLI-06].

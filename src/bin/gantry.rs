@@ -444,6 +444,7 @@ fn load_project(g: &Global) -> Result<Orchestrator> {
         profiles: g.profiles.clone(),
         runtime: g.runtime,
         cwd: installed,
+        ..Default::default()
     };
     let loaded = load(&opts)?;
     for w in &loaded.warnings {

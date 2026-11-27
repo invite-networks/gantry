@@ -15,6 +15,20 @@ pub struct Ctx<'a> {
     pub runtime_override: Option<RuntimeKind>,
     pub profiles: Vec<String>,
     pub lookup: &'a dyn Fn(&str) -> Option<String>,
+    /// Read services' `env_file` files. Off when checking text alone.
+    pub read_env_files: bool,
+    pub home: Home,
+}
+
+/// What a `~/` path means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Home {
+    /// The `HOME` of this process.
+    Env,
+    /// An error: the process environment is not to be consulted.
+    Refuse,
+    /// Left as written, for checking text alone.
+    Keep,
 }
 
 /// Service keys gantry knows and ignores, with the reason shown to the user.
@@ -1085,7 +1099,10 @@ fn service(
             .collect(),
     };
     for (path, required) in env_files {
-        let full = resolve_path(&ctx.project_dir, &path);
+        if !ctx.read_env_files {
+            continue;
+        }
+        let full = resolve_path(ctx, &path).map_err(err)?;
         if !full.exists() && !required {
             continue;
         }
@@ -1405,7 +1422,8 @@ fn build_spec(
         .map(|(k, v)| format!("{k}:{v}"))
         .collect();
     Ok(crate::project::Build {
-        context: resolve_path(&ctx.project_dir, &context),
+        context: resolve_path(ctx, &context)
+            .map_err(|e| Error::config(format!("service {service}: build: {e}")))?,
         dockerfile: l.dockerfile,
         dockerfile_inline: l.dockerfile_inline,
         args: list_or_map(l.args, ctx, true),
@@ -1427,18 +1445,28 @@ fn build_spec(
     })
 }
 
-fn resolve_path(base: &Path, p: &str) -> PathBuf {
+fn resolve_path(ctx: &Ctx<'_>, p: &str) -> std::result::Result<PathBuf, String> {
     if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
+        match ctx.home {
+            Home::Env => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    return Ok(PathBuf::from(home).join(rest));
+                }
+            }
+            Home::Refuse => {
+                return Err(format!(
+                    "{p}: ~/ paths are not allowed here; use a path relative to the project"
+                ));
+            }
+            Home::Keep => return Ok(PathBuf::from(p)),
         }
     }
     let path = Path::new(p);
-    if path.is_absolute() {
+    Ok(if path.is_absolute() {
         path.to_path_buf()
     } else {
-        normalize_path(&base.join(path))
-    }
+        normalize_path(&ctx.project_dir.join(path))
+    })
 }
 
 /// Removes `.` and `..` components without touching the filesystem.
@@ -1495,7 +1523,7 @@ fn mount(
             if is_path(source) {
                 Ok(Mount {
                     kind: MountKind::Bind,
-                    source: resolve_path(&ctx.project_dir, source).display().to_string(),
+                    source: resolve_path(ctx, source)?.display().to_string(),
                     target: target.into(),
                     read_only,
                     options,
@@ -1528,7 +1556,7 @@ fn mount(
                     }
                     Ok(Mount {
                         kind: MountKind::Bind,
-                        source: resolve_path(&ctx.project_dir, &src).display().to_string(),
+                        source: resolve_path(ctx, &src)?.display().to_string(),
                         target: l.target,
                         read_only: l.read_only,
                         options,

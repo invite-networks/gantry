@@ -1,8 +1,10 @@
 //! Loading compose files: discovery, `.env`, interpolation, merging of
 //! several `-f` files, and normalization into [`crate::project::Project`].
 
+mod check;
 pub mod interpolate;
 pub(crate) mod normalize;
+pub use check::{CheckOptions, CheckProfiles, Checked, Issue, check};
 pub mod raw;
 pub mod units;
 
@@ -35,6 +37,13 @@ pub struct LoadOptions {
     pub runtime: Option<RuntimeKind>,
     /// Working directory used for discovery. Defaults to the process cwd.
     pub cwd: Option<PathBuf>,
+    /// Values for `${VAR}` that win over the environment and env files.
+    pub vars: IndexMap<String, String>,
+    /// Take `${VAR}` values (and `COMPOSE_PROFILES`, `COMPOSE_PROJECT_NAME`)
+    /// only from `vars` and the env files, never from this process's
+    /// environment, and refuse `~/` paths. For a caller whose environment
+    /// must not reach a project, such as an agent running as root.
+    pub isolated_env: bool,
 }
 
 /// A loaded project plus any warnings worth showing the user.
@@ -77,9 +86,12 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
     for f in &env_files {
         dotenv.extend(read_env_file(f)?);
     }
+    let vars = opts.vars.clone();
+    let isolated = opts.isolated_env;
     let lookup = move |name: &str| {
-        std::env::var(name)
-            .ok()
+        vars.get(name)
+            .cloned()
+            .or_else(|| (!isolated).then(|| std::env::var(name).ok()).flatten())
             .or_else(|| dotenv.get(name).cloned())
     };
 
@@ -115,6 +127,12 @@ pub fn load(opts: &LoadOptions) -> Result<Loaded> {
         runtime_override: opts.runtime,
         profiles,
         lookup: &lookup,
+        read_env_files: true,
+        home: if opts.isolated_env {
+            normalize::Home::Refuse
+        } else {
+            normalize::Home::Env
+        },
     };
     let (project, warnings) = normalize::normalize(raw, &ctx)?;
     Ok(Loaded {
@@ -314,10 +332,15 @@ pub const MAX_TEXT: usize = 4 * 1024 * 1024;
 /// Walks the document once, following aliases, storing nothing, and stops
 /// as soon as it passes [`MAX_NODES`] values or [`MAX_TEXT`] bytes of text.
 pub fn within_budget(text: &str) -> std::result::Result<(), String> {
+    budget(text).map_err(|e| e.to_string())
+}
+
+/// [`within_budget`] with the parser's error, which carries a location.
+fn budget(text: &str) -> std::result::Result<(), serde_norway::Error> {
     use serde::de::DeserializeSeed;
     let budget = Budget::default();
     for doc in serde_norway::Deserializer::from_str(text) {
-        Count(&budget).deserialize(doc).map_err(|e| e.to_string())?;
+        Count(&budget).deserialize(doc)?;
     }
     Ok(())
 }
@@ -449,6 +472,41 @@ mod budget_tests {
         }
         let e = within_budget(&text).unwrap_err();
         assert!(e.contains("MiB of text"), "{e}");
+    }
+
+    #[test]
+    fn isolated_env_ignores_the_process_environment() {
+        assert!(std::env::var_os("HOME").is_some(), "test needs HOME set");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("compose.yaml"),
+            "name: iso\nservices:\n  a:\n    image: \"img${HOME}\"\n    network_mode: none\n    command: [\"${FROM_VARS}\", \"${FROM_DOTENV}\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".env"), "FROM_DOTENV=d\nFROM_VARS=lost\n").unwrap();
+        let opts = |isolated| LoadOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            vars: [("FROM_VARS".to_string(), "v".to_string())].into(),
+            isolated_env: isolated,
+            ..Default::default()
+        };
+        let p = load(&opts(true)).unwrap().project;
+        assert_eq!(p.services["a"].image, "img");
+        assert_eq!(
+            p.services["a"].command.as_deref(),
+            Some(&["v".to_string(), "d".to_string()][..])
+        );
+        // Without isolation the process environment fills ${HOME}.
+        let p = load(&opts(false)).unwrap().project;
+        assert_ne!(p.services["a"].image, "img");
+
+        std::fs::write(
+            dir.path().join("compose.yaml"),
+            "name: iso\nservices:\n  a: { image: x, network_mode: none, volumes: [\"~/d:/d\"] }\n",
+        )
+        .unwrap();
+        let e = load(&opts(true)).unwrap_err().to_string();
+        assert!(e.contains("~/"), "{e}");
     }
 
     #[test]
