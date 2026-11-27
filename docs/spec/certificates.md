@@ -1,7 +1,7 @@
 # Pod Certificates (proposal)
 
-Status: proposal for review. Names marked *(pending)* are waiting on the
-internal CA's owner to confirm them.
+Status: proposal for review. The CA side (`gantry-hosts-enroll` and
+`gantry-hosts` on infraca) is built and tested but not yet in production.
 
 ## Goals
 
@@ -28,15 +28,26 @@ Nautobot role is "Gantry Host":
 | | |
 |---|---|
 | CA | `https://infraca.infra.invite.global` |
-| Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), SAN `<host>.infra.invite.global` |
+| Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), client authentication only, SAN `<host>.infra.invite.global`, 90 days |
 | Key | `/etc/ssl/private/gantry-credential.key`, root only, 0600 |
 | CA root | `/usr/local/share/ca-certificates/infraca-root.crt` |
 | Renewal | a systemd timer runs `step ca renew`, and the next Ansible run reissues a lapsed credential |
 
-Gantry sends the pod's certificate request to the X5C provisioner
-`gantry-hosts` *(pending)*, signed with the credential. That provisioner
-accepts only Gantry credentials, not ordinary host certificates, and issues
-DNS names under `infra.invite.global` only, for 30 days.
+Gantry asks the X5C provisioner `gantry-hosts` for the pod's certificate,
+signed with the credential, the equivalent of:
+
+```sh
+step ca certificate app.infra.invite.global pod.crt pod.key \
+  --provisioner gantry-hosts \
+  --x5c-cert /etc/ssl/gantry/credential.crt \
+  --x5c-key /etc/ssl/private/gantry-credential.key
+```
+
+That provisioner accepts only credentials issued by `gantry-hosts-enroll`,
+refusing ordinary host certificates and pod certificates alike, and issues
+DNS names only, for 720 hours. **Renewal does not use the credential:** a pod
+certificate is renewed with itself over mutual TLS (`step ca renew`), so a
+running pod keeps its certificate even if its host's credential lapses.
 
 The ordinary host certificate (`/etc/ssl/host/`) is never used: its key is
 readable by the `ssl-cert` group, and every Linux host has one.
@@ -46,7 +57,7 @@ readable by the `ssl-cert` group, and every Linux host has one.
 ```yaml
 pod:
   tls:
-    names: [app.infra.invite.global]   # extra names, see Names
+    names: [shop.infra.invite.global]  # required, one label each, see Names
     key_type: ec256                    # ec256 (default), rsa2048, rsa4096
     optional: false                    # true: start without a certificate and keep trying
 
@@ -83,11 +94,16 @@ is an error.
 
 ### Names
 
-The certificate carries the pod's hostname as a fully qualified name under
-`infra.invite.global` (`<hostname>.infra.invite.global` unless `domainname:`
-already gives one), plus every entry in `names`. A name outside
-`infra.invite.global` is a configuration error, caught before the CA is
-asked. IP addresses are never included, so clients connect by name. The
+The CA allows exactly one label under `infra.invite.global`:
+`app.infra.invite.global` is allowed, `web.app.infra.invite.global` and
+`infraca.infra.invite.global` are refused. Gantry checks this before asking
+the CA, so a bad name is a configuration error naming the entry.
+
+`names` is required and lists every name. Gantry does not default to the
+pod's hostname, because names under `infra.invite.global` are shared by
+every project on every host: two projects with a pod called `web` would ask
+for the same name. IP addresses are never included, so clients connect by
+name. The
 pod's DNS records come from Nautobot (gantry-nautobot records the pod, and
 invite-nautobot publishes its names).
 
@@ -139,9 +155,11 @@ Key material (`key`, `key-pkcs1`, `bundle`, `pkcs12`) is mode 0400, the rest
    would keep the old copy.
 4. **Renew.** The watcher that already acts on health (`gantry supervise`, or
    gantry-agent through the library) renews a certificate at two thirds of
-   its lifetime, re-renders every service's files at once, and runs each
-   service's `on_renew`. A failed renewal keeps the current certificate,
-   warns, and retries with backoff.
+   its lifetime with the certificate itself, re-renders every service's files
+   at once, and runs each service's `on_renew`. A failed renewal keeps the
+   current certificate, warns, and retries with backoff. A certificate that
+   has expired cannot renew itself, so gantry issues a new one with the
+   credential, as at creation.
 5. **Show.** `gantry ps` and `gantry stats` show each pod's certificate
    expiry, and plugins get it in their event data, so monitoring can alert
    before a certificate runs out.
@@ -158,9 +176,11 @@ plugin declares `[certificate] from = "stepca"` in its manifest and answers
   "lifetime_hours": 720 } }
 ```
 
-The answer carries the certificate, the chain and the root, in PEM. The
-first plugin, **gantry-stepca**, signs with the Gantry credential through
-the `gantry-hosts` provisioner. Its settings file names the CA URL, the
+The answer carries the certificate, the chain and the root, in PEM. A
+`renew` request carries the current certificate and key and gets the same
+answer. The first plugin, **gantry-stepca**, signs with the Gantry credential
+through the `gantry-hosts` provisioner and renews over mutual TLS with the
+pod certificate. Its settings file names the CA URL, the
 provisioner and the credential paths. Without a project setting, a pod uses
 the only installed issuer, and more than one installed issuer means the pod
 must name one (`tls: { issuer: stepca }`).
@@ -173,6 +193,18 @@ must name one (`tls: { issuer: stepca }`).
 - **Down.** `gantry down` removes the key and certificate with the pod's
   directory. The certificate stays valid at the CA until it expires (up to
   30 days). Revocation at `down` can be added if that window matters.
+
+## Security Notes
+
+- The credential key is the power to mint any `*.infra.invite.global`
+  certificate, so it is root only and used only by the issuer plugin. Gantry
+  never mounts it into a container.
+- step-ca does not check whether an X5C credential has been revoked. A stolen
+  credential keeps minting certificates until it expires (90 days now). A
+  shorter credential lifetime, with Ansible or a timer renewing it more often,
+  narrows that window. That is a decision for the CA's owner.
+- A pod certificate cannot mint others: `gantry-hosts` refuses it as a
+  credential.
 
 ## Open Questions
 
