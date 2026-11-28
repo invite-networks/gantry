@@ -53,7 +53,7 @@ mutual TLS with the pod certificate itself) keeps its original length, and a
 certificate that has expired cannot be renewed at all.
 
 So gantry mints rather than renews. Each time the credential changes, the
-hook `/etc/step-renew-gantry.d/gantry` (shipped by the gantry-stepca package,
+hook `/etc/step-renew-gantry.d/50-gantry` (shipped by the gantry-stepca package,
 no dots in the name as run-parts requires) tells the watcher, and every pod
 certificate is minted again from the fresh credential, getting close to a
 full 24 hours. The hook only signals the watcher and exits at once, so a
