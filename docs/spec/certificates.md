@@ -1,6 +1,6 @@
 # Pod Certificates (proposal)
 
-Status: proposal for review. The CA side (`gantry-hosts-enroll` and
+Status: accepted 2026-11-27. The CA side (`gantry-hosts-enroll` and
 `gantry-hosts` on infraca) is in production for Gantry Hosts.
 
 ## Goals
@@ -133,7 +133,11 @@ invite-nautobot publishes its names).
 
 A value is a content name, or a map with `format:` (`pem`, the default,
 `der`, or `pkcs12`) and, for PKCS#12, `password:`. Without `files:` a service
-gets `cert.pem` (full chain), `key.pem` and `ca.pem`.
+gets the layout certbot made familiar: `cert.pem` (the certificate alone),
+`chain.pem`, `fullchain.pem`, `key.pem` and `ca.pem`.
+
+`key-pkcs1` and PKCS#12 are converted with `openssl` on the host. The other
+contents are the PEM blocks the issuer returned, or their DER bytes.
 
 ### Ownership
 
@@ -143,11 +147,14 @@ Key material (`key`, `key-pkcs1`, `bundle`, `pkcs12`) is mode 0400, the rest
 
 ### On Renewal
 
+`on_renew` is required on every service with `tls:`. Certificates last a
+day, so the choice is made per service, never by default.
+
 | `on_renew` | What gantry does |
 |---|---|
 | `{ signal: SIGHUP }` | sends the signal to the container's main process |
 | `{ exec: [cmd, ...] }` | runs the command in the container |
-| `restart` | restarts the container (the default) |
+| `restart` | restarts the container |
 | `none` | nothing, for a service that reloads the files itself |
 
 ## How It Works
@@ -192,24 +199,35 @@ gantry-agent can raise it in Gantry Server:
 
 ## Issuer Plugin
 
-Signing goes through the plugin protocol, as address allocation does. A
+Issuing goes through the plugin protocol, as address allocation does. A
 plugin declares `[certificate] from = "stepca"` in its manifest and answers
-`sign` requests:
+three requests. The plugin generates the key, as `step ca certificate` does,
+so gantry needs no cryptography of its own.
 
 ```json
-{ "type": "sign", "id": 7, "data": { "project": "shop", "pod": "web",
-  "csr": "-----BEGIN CERTIFICATE REQUEST-----...", "names": ["web.infra.invite.global"],
-  "lifetime_hours": 24 } }
+{ "type": "issue", "id": 7, "data": { "project": "shop", "pod": "web",
+  "names": ["shop.infra.invite.global"], "key_type": "ec256" } }
+{ "type": "renew", "id": 8, "data": { "project": "shop", "pod": "web",
+  "cert": "-----BEGIN CERTIFICATE-----...", "key": "-----BEGIN PRIVATE KEY-----..." } }
+{ "type": "status", "id": 9, "data": {} }
 ```
 
-The answer carries the certificate, the chain and the root, in PEM. A
-`renew` request carries the current certificate and key and gets the same
-answer. The first plugin, **gantry-stepca**, signs with the Gantry credential
-through the `gantry-hosts` provisioner and renews over mutual TLS with the
-pod certificate. Its settings file names the CA URL, the
-provisioner and the credential paths. Without a project setting, a pod uses
-the only installed issuer, and more than one installed issuer means the pod
-must name one (`tls: { issuer: stepca }`).
+`issue` and `renew` answer with `key` (PEM, PKCS#8), `cert` (the certificate
+alone), `chain` (the intermediates), `root`, and `not_after` (milliseconds
+since the Unix epoch). `status` answers with a list of `problems`, each a
+`message` and a `severity`, for what the issuer can see on its own: a
+missing or expiring credential, or the CA not answering its health check.
+The watcher asks for `status` every few minutes and reports what it gets
+(see Reporting).
+
+The first plugin, **gantry-stepca**, runs `step` with the Gantry credential
+against the `gantry-hosts` provisioner, renews with `step ca renew --force`
+over mutual TLS, refuses a name that is not a single label under its
+configured domain before it reaches the CA, and ships the credential hook.
+Its settings file names the CA URL, the provisioner, the domain and the
+credential paths. Without a project setting, a pod uses the only installed
+issuer, and more than one installed issuer means the pod must name one
+(`tls: { issuer: stepca }`).
 
 ## Moving and Removing
 
@@ -231,14 +249,10 @@ must name one (`tls: { issuer: stepca }`).
 - A pod certificate cannot mint others: `gantry-hosts` refuses it as a
   credential.
 
-## Open Questions
+## Decisions
 
-1. Should `on_renew` default to `restart`, which always works but restarts
-   every service with a certificate about once a day, or to `none`, which is
-   free but silently wrong for software that does not reload its
-   certificates? With 24 hour certificates, `restart` as a default looks
-   costly. A required `on_renew` (no default) is a third option.
-2. Is the full chain or the leaf alone the right default for `cert.pem`?
-   Full chain suits servers. Some clients want the leaf alone.
-3. Does any service need the certificate before its pod exists, for example
-   a build step? This design does not cover that.
+- `on_renew` is required (2026-11-27).
+- `cert.pem` is the certificate alone, and the default layout adds
+  `chain.pem` and `fullchain.pem` (2026-11-27).
+- Certificates needed before a pod exists, such as during a build, are out
+  of scope (2026-11-27).
