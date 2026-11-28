@@ -356,6 +356,15 @@ enum InternalCmd {
     Man,
     /// Print the directory of an installed project
     Locate { name: String },
+    /// Tell the certificate watcher the issuer's credential changed, so it
+    /// mints every pod certificate again (run by the credential hook)
+    TlsRefresh,
+    /// Run the pod certificate watcher alone (as `supervise` does), or one
+    /// pass of it with --once
+    TlsWatch {
+        #[arg(long)]
+        once: bool,
+    },
     /// DHCP agent for one pod interface
     DhcpAgent {
         #[arg(long)]
@@ -546,6 +555,22 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Cmd::Internal(InternalCmd::Locate { name }) => {
             println!("{}", gantry::installed::locate(&name)?.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Internal(InternalCmd::TlsRefresh) => {
+            // Never fail the credential hook's run-parts chain.
+            if let Err(e) = gantry::tls::trigger() {
+                eprintln!("gantry: tls-refresh: {e}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Internal(InternalCmd::TlsWatch { once }) => {
+            require_root()?;
+            if once {
+                gantry::tls::pass(true, &mut Default::default()).await;
+            } else {
+                gantry::tls::watch(tokio_util::sync::CancellationToken::new()).await?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Internal(InternalCmd::Man) => {
@@ -837,14 +862,19 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 }
                 stop.cancel();
             });
-            gantry::heal::watch(
-                &[RuntimeKind::Docker, RuntimeKind::Kiri],
-                gantry::heal::Policy::default(),
-                gantry::heal::Control::default(),
-                None,
-                cancel,
-            )
-            .await?;
+            // Health and pod certificates, side by side until a signal.
+            let (heal, tls) = tokio::join!(
+                gantry::heal::watch(
+                    &[RuntimeKind::Docker, RuntimeKind::Kiri],
+                    gantry::heal::Policy::default(),
+                    gantry::heal::Control::default(),
+                    None,
+                    cancel.clone(),
+                ),
+                gantry::tls::watch(cancel),
+            );
+            heal?;
+            tls?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Start { services } => {
@@ -1134,6 +1164,13 @@ async fn ps(o: &Orchestrator) -> Result<()> {
         }
     }
     print_table(&rows);
+    for (line, attention) in gantry::tls::summary(&o.project) {
+        if attention {
+            eprintln!("gantry: warning: {line}");
+        } else {
+            println!("{line}");
+        }
+    }
     Ok(())
 }
 

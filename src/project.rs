@@ -141,6 +141,102 @@ pub struct Pod {
     pub firewall: Option<Firewall>,
     /// True for the loopback-only pod of a `network_mode: none` service.
     pub implicit: bool,
+    /// A certificate for the pod from an issuer plugin. Left out of the
+    /// serialized form when unset, so pods without it keep their hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<PodTls>,
+}
+
+/// `pod.tls`: the pod's certificate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PodTls {
+    /// Every DNS name the certificate carries.
+    pub names: Vec<String>,
+    pub key_type: KeyType,
+    /// Start the pod without a certificate when the issuer fails.
+    pub optional: bool,
+    /// The issuer plugin's `[certificate] from`, when more than one is
+    /// installed.
+    pub issuer: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyType {
+    #[default]
+    Ec256,
+    Rsa2048,
+    Rsa4096,
+}
+
+impl KeyType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyType::Ec256 => "ec256",
+            KeyType::Rsa2048 => "rsa2048",
+            KeyType::Rsa4096 => "rsa4096",
+        }
+    }
+}
+
+/// A service's `tls`: where its copy of the pod's certificate goes, in
+/// which files, and what to do when it changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceTls {
+    /// Absolute path in the container; the directory is mounted read only.
+    pub dir: String,
+    /// File name to what it holds, in order.
+    pub files: IndexMap<String, TlsFile>,
+    /// uid and gid the files belong to.
+    pub owner: (u32, u32),
+    pub on_renew: OnRenew,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsFile {
+    pub content: TlsContent,
+    pub format: TlsFormat,
+    /// PKCS#12 only.
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TlsContent {
+    Cert,
+    Chain,
+    Fullchain,
+    Key,
+    KeyPkcs1,
+    Root,
+    Bundle,
+}
+
+impl TlsContent {
+    /// Holds private key material, so the file is 0400.
+    pub fn is_secret(self) -> bool {
+        matches!(
+            self,
+            TlsContent::Key | TlsContent::KeyPkcs1 | TlsContent::Bundle
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsFormat {
+    Pem,
+    Der,
+    Pkcs12,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnRenew {
+    Signal(String),
+    Exec(Vec<String>),
+    Restart,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +382,9 @@ pub struct Service {
     pub labels: IndexMap<String, String>,
     pub mounts: Vec<Mount>,
     pub restart: Option<String>,
+    /// This service's copy of the pod's certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<ServiceTls>,
     pub healthcheck: Option<Healthcheck>,
     /// What `gantry supervise` does when the container turns unhealthy.
     pub health_on_failure: HealthOnFailure,

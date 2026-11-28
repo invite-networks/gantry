@@ -58,6 +58,7 @@ to start containers inside namespaces that already exist.
 | Health watcher | `src/heal.rs` | `watch`: acts on unhealthy containers that set `health_on_failure`; restart backoff, host lock, action reports (section 6.2). |
 | Orchestrator | `src/orchestrator.rs` | `up`, `down`, `start`, `stop`, `restart`, dependency ordering, waiting on conditions, the per-project lock, plugin event data and address allocation. |
 | Stats | `src/stats.rs` | `gantry stats`: two engine readings per container (`Engine::sample`, the one-shot stats endpoint) and two reads of each pod's `/proc/thread-self/net/dev` from inside its namespace, turned into rates and summed per pod. |
+| Pod certificates | `src/tls.rs` | Issue at `up`, render each service's files, the refresh watcher and its passes, `on_renew`, reporting (section 6.10, [certificates.md](certificates.md)). |
 | Plugins | `src/plugin.rs` | Manifest discovery and host overrides (`Registry`), starting plugins and the JSON lines protocol (`Plugins`), hooks and `allocate` (section 6.9). |
 | Errors | `src/errors.rs` | One `thiserror` enum grouped by layer: Config, Io, Sys, Engine, Network, Firewall, Dhcp, State. |
 | Utilities | `src/util.rs` | Atomic and in-place writes, hashing. |

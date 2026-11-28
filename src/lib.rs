@@ -46,3 +46,5 @@ pub mod plugin;
 pub mod progress;
 #[cfg(feature = "runtime")]
 pub mod stats;
+#[cfg(feature = "runtime")]
+pub mod tls;

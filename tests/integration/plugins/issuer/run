@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Test certificate issuer: signs pod certificates with a throwaway CA.
+
+The CA (a root and an intermediate) is made with openssl in this directory
+on first use. A file named `lifetime` sets certificate lifetimes in seconds
+(default 86400). Each line of a file named `problems` is reported by
+`status`. Every request is appended to `got`.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+D = os.path.dirname(os.path.abspath(__file__))
+
+
+def sh(*args: str, cwd: str = D) -> bytes:
+    return subprocess.run(args, capture_output=True, check=True, cwd=cwd).stdout
+
+
+def read(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def ca() -> None:
+    if os.path.exists(f"{D}/int.crt"):
+        return
+    ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"]
+    sh(
+        "openssl",
+        "req",
+        "-x509",
+        *ec,
+        "-keyout",
+        "root.key",
+        "-out",
+        "root.crt",
+        "-days",
+        "2",
+        "-subj",
+        "/CN=Gantry Test Root",
+    )
+    sh(
+        "openssl",
+        "req",
+        *ec,
+        "-keyout",
+        "int.key",
+        "-out",
+        "int.csr",
+        "-subj",
+        "/CN=Gantry Test Intermediate",
+    )
+    with open(f"{D}/int.ext", "w") as f:
+        f.write(
+            "basicConstraints=critical,CA:true,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n"
+        )
+    sh(
+        "openssl",
+        "x509",
+        "-req",
+        "-in",
+        "int.csr",
+        "-CA",
+        "root.crt",
+        "-CAkey",
+        "root.key",
+        "-CAcreateserial",
+        "-out",
+        "int.crt",
+        "-days",
+        "2",
+        "-extfile",
+        "int.ext",
+    )
+
+
+def issue(names: list[str], key_type: str) -> dict:
+    ca()
+    life = int(read(f"{D}/lifetime")) if os.path.exists(f"{D}/lifetime") else 86400
+    not_after = int(time.time()) + life
+    key = {
+        "rsa2048": ["-newkey", "rsa:2048"],
+        "rsa4096": ["-newkey", "rsa:4096"],
+    }.get(key_type, ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256"])
+    with tempfile.TemporaryDirectory() as t:
+        sh(
+            "openssl",
+            "req",
+            *key,
+            "-nodes",
+            "-keyout",
+            "k",
+            "-out",
+            "csr",
+            "-subj",
+            f"/CN={names[0]}",
+            cwd=t,
+        )
+        with open(f"{t}/ext", "w") as f:
+            sans = ",".join(f"DNS:{n}" for n in names)
+            f.write(f"subjectAltName={sans}\nextendedKeyUsage=serverAuth\n")
+        stamp = time.strftime("%Y%m%d%H%M%SZ", time.gmtime(not_after))
+        sh(
+            "openssl",
+            "x509",
+            "-req",
+            "-in",
+            "csr",
+            "-CA",
+            f"{D}/int.crt",
+            "-CAkey",
+            f"{D}/int.key",
+            "-CAcreateserial",
+            "-CAserial",
+            f"{D}/int.srl",
+            "-out",
+            "crt",
+            "-not_after",
+            stamp,
+            "-extfile",
+            "ext",
+            cwd=t,
+        )
+        pkcs8 = sh("openssl", "pkey", "-in", "k", cwd=t).decode()
+        cert = read(f"{t}/crt")
+    return {
+        "key": pkcs8,
+        "cert": cert,
+        "chain": read(f"{D}/int.crt"),
+        "root": read(f"{D}/root.crt"),
+        "not_after": not_after * 1000,
+    }
+
+
+def answer(msg: dict) -> dict:
+    kind = msg.get("type")
+    data = msg.get("data") or {}
+    if kind == "issue":
+        return issue(data["names"], data.get("key_type", "ec256"))
+    if kind == "renew":
+        # A test CA has no renewal: a fresh certificate for the same names.
+        with tempfile.TemporaryDirectory() as t:
+            with open(f"{t}/c", "w") as f:
+                f.write(data["cert"])
+            text = sh(
+                "openssl", "x509", "-in", "c", "-noout", "-ext", "subjectAltName", cwd=t
+            ).decode()
+        names = [
+            n.split(":", 1)[1]
+            for n in text.replace(",", " ").split()
+            if n.startswith("DNS:")
+        ]
+        return issue(names, "ec256")
+    if kind == "status":
+        lines = (
+            read(f"{D}/problems").splitlines()
+            if os.path.exists(f"{D}/problems")
+            else []
+        )
+        return {
+            "problems": [
+                {"message": m, "severity": "error"} for m in lines if m.strip()
+            ]
+        }
+    raise ValueError(f"unknown request {kind}")
+
+
+for line in sys.stdin:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    with open(f"{D}/got", "a") as f:
+        f.write(json.dumps({"type": msg.get("type"), "hook": msg.get("hook")}) + "\n")
+    if "id" not in msg:
+        continue
+    try:
+        reply = {"id": msg["id"], "ok": True, "result": answer(msg)}
+    except Exception as e:  # noqa: BLE001 - every failure goes back to gantry
+        reply = {"id": msg["id"], "ok": False, "error": str(e)}
+    print(json.dumps(reply), flush=True)

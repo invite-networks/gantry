@@ -26,6 +26,7 @@ const MANIFEST: &str = "plugin.toml";
 const DEFAULT_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_ASYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_ADDRESS_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_CERTIFICATE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A point in a command where plugins are told what happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,10 +41,11 @@ pub enum Hook {
     PostRestart,
     HealRestart,
     Boot,
+    TlsProblem,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 9] = [
+    pub const ALL: [Hook; 10] = [
         Hook::PreUp,
         Hook::PostUp,
         Hook::PreDown,
@@ -53,6 +55,7 @@ impl Hook {
         Hook::PostRestart,
         Hook::HealRestart,
         Hook::Boot,
+        Hook::TlsProblem,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -66,6 +69,7 @@ impl Hook {
             Hook::PostRestart => "post_restart",
             Hook::HealRestart => "heal_restart",
             Hook::Boot => "boot",
+            Hook::TlsProblem => "tls_problem",
         }
     }
 
@@ -115,6 +119,8 @@ pub struct Manifest {
     pub exec: Vec<String>,
     pub hooks: IndexMap<Hook, HookSpec>,
     pub address: Option<AddressSpec>,
+    /// The `[certificate]` table: this plugin issues pod certificates.
+    pub certificate: Option<AddressSpec>,
     /// False when `/etc/gantry/plugins.toml` disables it on this host.
     pub host_enabled: bool,
 }
@@ -128,6 +134,7 @@ struct RawManifest {
     #[serde(default)]
     hooks: IndexMap<String, RawHook>,
     address: Option<RawAddress>,
+    certificate: Option<RawAddress>,
 }
 
 #[derive(Deserialize)]
@@ -259,6 +266,11 @@ impl Registry {
     }
 
     /// The plugin that allocates `address: { from: <from> }`.
+    /// Plugins that issue certificates.
+    pub fn certificate_providers(&self) -> impl Iterator<Item = &Manifest> {
+        self.plugins.iter().filter(|p| p.certificate.is_some())
+    }
+
     pub fn address_provider(&self, from: &str) -> Option<&Manifest> {
         self.plugins
             .iter()
@@ -324,6 +336,15 @@ fn read_manifest(path: &Path) -> Result<Manifest, String> {
             })
         })
         .transpose()?;
+    let certificate = raw
+        .certificate
+        .map(|a| -> Result<AddressSpec, String> {
+            Ok(AddressSpec {
+                timeout: timeout(&a.timeout, DEFAULT_CERTIFICATE_TIMEOUT)?,
+                from: a.from,
+            })
+        })
+        .transpose()?;
     Ok(Manifest {
         name: raw.name,
         version: raw.version,
@@ -331,6 +352,7 @@ fn read_manifest(path: &Path) -> Result<Manifest, String> {
         exec: raw.exec,
         hooks,
         address,
+        certificate,
         host_enabled: true,
     })
 }
@@ -483,12 +505,67 @@ impl Plugins {
             .address
             .as_ref()
             .map_or(DEFAULT_ADDRESS_TIMEOUT, |a| a.timeout);
+        self.call(m, "allocate", data, timeout).await
+    }
+
+    /// Sends a certificate request (`issue`, `renew` or `status`) to the
+    /// issuer `from` names, or to the only enabled issuer when it names
+    /// none.
+    pub async fn certificate(
+        &self,
+        from: Option<&str>,
+        kind: &str,
+        data: &Value,
+    ) -> crate::Result<Value> {
+        let enabled: Vec<&Manifest> = self
+            .registry
+            .certificate_providers()
+            .filter(|m| self.is_enabled(&m.name))
+            .collect();
+        let m = match from {
+            Some(f) => enabled
+                .iter()
+                .find(|m| m.certificate.as_ref().is_some_and(|c| c.from == f))
+                .copied()
+                .ok_or_else(|| {
+                    crate::Error::config(format!(
+                        "certificate issuer {f:?}: no enabled plugin provides it"
+                    ))
+                })?,
+            None => match enabled.as_slice() {
+                [one] => *one,
+                [] => {
+                    return Err(crate::Error::config(
+                        "certificate: no certificate issuer plugin is installed and enabled",
+                    ));
+                }
+                _ => {
+                    return Err(crate::Error::config(
+                        "certificate: more than one issuer is installed; set tls.issuer",
+                    ));
+                }
+            },
+        };
+        let timeout = m
+            .certificate
+            .as_ref()
+            .map_or(DEFAULT_CERTIFICATE_TIMEOUT, |c| c.timeout);
+        self.call(m, kind, data, timeout).await
+    }
+
+    async fn call(
+        &self,
+        m: &Manifest,
+        kind: &str,
+        data: &Value,
+        timeout: Duration,
+    ) -> crate::Result<Value> {
         let msg = json!({
-            "type": "allocate",
+            "type": kind,
             "deadline_ms": deadline_ms(timeout),
             "data": self.with_settings(&m.name, data),
         });
-        let fail = |e: String| crate::Error::State(format!("plugin {}: allocate: {e}", m.name));
+        let fail = |e: String| crate::Error::State(format!("plugin {}: {kind}: {e}", m.name));
         let run = self.start(m).await.map_err(fail)?;
         tokio::time::timeout(timeout, run.request(msg))
             .await

@@ -37,6 +37,8 @@ pub fn config_hash(_project: &Project, pod: &Pod) -> String {
     // The firewall and hosts entries are applied live; they do not force a
     // recreate.
     shape.firewall = None;
+    // Certificates are issued and refreshed live, without a new pod.
+    shape.tls = None;
     shape.extra_hosts.clear();
     let data = serde_json::to_vec(&shape).unwrap_or_default();
     crate::util::hash_hex(&data)

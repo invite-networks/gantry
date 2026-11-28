@@ -248,6 +248,16 @@ Priority: **M** must, **S** should, **C** could.
 | FR-PLUG-07 | Every installed plugin shall run for every project unless the host config disables it or the project sets `plugins.<name>.enabled: false`. A `plugins:` block for a plugin that is not installed shall be ignored. | M |
 | FR-PLUG-08 | A plugin that exits early shall never stop gantry: writes to it shall not raise SIGPIPE in gantry, and pending requests shall fail as soon as its stdout closes. | M |
 
+### 5.12 Pod certificates
+
+| ID | Requirement | Priority |
+|---|---|---|
+| FR-TLS-01 | `pod.tls` shall require fully qualified `names` and accept `key_type` (ec256, rsa2048, rsa4096), `optional` and `issuer`. A service `tls` shall require `on_renew` (`{ signal }`, `{ exec }`, `restart`, `none`), and accept `dir` (absolute, default `/etc/tls`), `files` (name to content and format, default cert.pem, chain.pem, fullchain.pem, key.pem, ca.pem) and `owner`. A service with `tls` in a pod without it shall be an error. `tls` shall not be part of the pod's configuration hash. | M |
+| FR-TLS-02 | `up` shall give each pod with `tls` a certificate from the issuer plugin (`[certificate]` in its manifest; `issue`, `renew`, `status` requests) before its containers start, reusing a current one for the same names and key type. A failure shall stop `up` unless the pod's tls is `optional`. | M |
+| FR-TLS-03 | Each service's files shall be written in its layout and ownership (key material 0400, the rest 0444) under the pod's directory in `/run/gantry`, replaced by rename, and that directory mounted read only at `dir`. Files no longer named shall be removed. | M |
+| FR-TLS-04 | The certificate watcher (`gantry supervise`, `tls::watch` for library callers, `gantry internal tls-watch`) shall mint a new certificate when one is past two thirds of its lifetime, when `gantry internal tls-refresh` has marked the issuer's credential changed since it was issued, or when its names or key type changed; renew it when minting fails; then rewrite every service's files and run each service's `on_renew`. It shall skip a project a `gantry` command holds. | M |
+| FR-TLS-05 | Certificate problems (none issued, mint or renew failed with the issuer's text, within 4 hours of its end or expired, and the issuer's own `status` problems) shall be logged as errors, printed on stderr, and sent as a `tls_problem` plugin event, repeated at most every 30 minutes. `ps` shall show each pod's certificate and warn on stderr when one needs attention. | M |
+
 ## 6. Non-functional requirements
 
 ### 6.1 Platform

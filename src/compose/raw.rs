@@ -136,8 +136,53 @@ pub struct Pod {
     pub priority: Option<u32>,
     /// Default runtime for services in this pod.
     pub runtime: Option<String>,
+    /// Extension: a certificate for the pod from an issuer plugin.
+    pub tls: Option<PodTls>,
     #[serde(flatten)]
     pub extra: IndexMap<String, Value>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PodTls {
+    pub names: Option<Vec<String>>,
+    pub key_type: Option<String>,
+    pub optional: Option<bool>,
+    pub issuer: Option<String>,
+}
+
+/// A service's `tls`: its copy of the pod's certificate.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTls {
+    pub dir: Option<String>,
+    pub files: Option<IndexMap<String, TlsFile>>,
+    pub owner: Option<Scalar>,
+    pub on_renew: Option<OnRenew>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum TlsFile {
+    Content(String),
+    Long {
+        content: Option<String>,
+        format: Option<String>,
+        password: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum OnRenew {
+    /// `restart` or `none`.
+    Word(String),
+    Signal {
+        signal: String,
+    },
+    Exec {
+        exec: Vec<String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -282,6 +327,8 @@ pub enum Ulimit {
 #[derive(Debug, Default, Deserialize)]
 pub struct Service {
     pub image: Option<String>,
+    /// Extension: this service's copy of its pod's certificate.
+    pub tls: Option<ServiceTls>,
     pub build: Option<Build>,
     pub logging: Option<Logging>,
     pub platform: Option<String>,

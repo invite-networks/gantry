@@ -14,6 +14,8 @@
 # dhcpmove moves the lab's DHCP pool under a running pod (about a minute).
 # heal runs the health watcher on Docker and kiri (GT_HEAL_RUNTIMES) with
 # loopback-only pods, so it needs no addresses (about a minute each).
+# tls issues a pod certificate from a test CA (debug builds only, like
+# plugins), checks each service's files, refreshes it and checks the signal.
 # plugins drives a recording plugin through up, stop, start, restart and
 # down with a loopback-only pod (debug builds only: it uses GANTRY_PLUGIN_DIR).
 set -u
@@ -250,12 +252,50 @@ plugins() {
   unset GANTRY_PLUGIN_DIR GANTRY_RUNTIME
 }
 
-targets=${*:-docker dhcp heal plugins}
+tls() {
+  echo "== tls"
+  # Plugins must be owned by root, so the issuer runs from a copy.
+  pd=$(mktemp -d)
+  cp -r "$here/plugins/issuer" "$pd/"
+  chown -R root:root "$pd" && chmod -R go-w "$pd"
+  export GANTRY_PLUGIN_DIR=$pd GANTRY_RUNTIME=docker
+  K="gantry -f $here/plugins/tls.yaml"
+  serial() { $K exec -T web cat /secrets/chain.pem | openssl x509 -noout -serial; }
+  $K down >/dev/null 2>&1
+  check "up issues the pod certificate" $K up -d
+  check "ps shows the certificate" sh -c "$K ps 2>&1 | grep -q 'certificate gttls.infra.invite.global expires in'"
+  check "service gets the full chain" sh -c "[ \$($K exec -T web cat /secrets/chain.pem | grep -c 'BEGIN CERTIFICATE') = 2 ]"
+  check "leaf is for the pod's name" sh -c "$K exec -T web cat /secrets/chain.pem | openssl x509 -noout -subject | grep -q gttls.infra.invite.global"
+  check "key belongs to the service user, 0400" sh -c "[ \"\$($K exec -T web stat -c '%u:%g %a' /secrets/key.pem)\" = '1060:1060 400' ]"
+  check "the service can read its key" sh -c "$K exec -T web cat /secrets/key.pem | grep -q 'BEGIN PRIVATE KEY'"
+  check "another service gets the root alone" sh -c "[ \"\$($K exec -T side ls /ca)\" = backend-ca.pem ]"
+  first=$(serial)
+  gantry internal tls-refresh
+  gantry internal tls-watch --once >/dev/null 2>&1
+  check "a credential change mints a new certificate in place" sh -c "[ \"\$($K exec -T web cat /secrets/chain.pem | openssl x509 -noout -serial)\" != '$first' ]"
+  sleep 2
+  check "the refresh signals the service" sh -c "$K exec -T web cat /tmp/hup | grep -q hup"
+  check_not "a certificate not yet due is left alone" sh -c "gantry internal tls-watch --once 2>&1 | grep -q 'refreshed'"
+  echo "credential expires in 2h" > "$pd/issuer/problems"
+  check "issuer problems are reported" sh -c "gantry internal tls-watch --once 2>&1 | grep -q 'issuer: credential expires in 2h'"
+  rm -f "$pd/issuer/problems"
+  $K down >/dev/null 2>&1
+  check_not "down removes the certificate" test -e /run/gantry/gttls/pods/gttls/tls
+  echo 600 > "$pd/issuer/lifetime"
+  $K up -d >/dev/null 2>&1
+  check "a certificate near its end is a warning" sh -c "$K ps 2>&1 >/dev/null | grep -q 'warning: pod gttls: certificate'"
+  $K down >/dev/null 2>&1
+  rm -rf "$pd"
+  unset GANTRY_PLUGIN_DIR GANTRY_RUNTIME
+}
+
+targets=${*:-docker dhcp heal plugins tls}
 for t in $targets; do
   case $t in
     docker|kiri) e2e "$t" ;;
     heal) heal ;;
     plugins) plugins ;;
+    tls) tls ;;
     dhcp) dhcp ;;
     dhcpmove) dhcpmove ;;
     ipv6) ipv6 ;;

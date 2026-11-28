@@ -340,6 +340,8 @@ candidates for new tests.
 | FR-CLI-03, FR-CLI-22 | Checked by hand on the reference host: attached `up` shows each service's first line, and `logs -f` resumes after `gantry restart` |
 | FR-CLI-23 | `pull_progress_sums_layers`, `plain_output_keeps_only_final_lines`; checked by hand: updated, up to date and pulled lines, and progress on a terminal with two images in parallel |
 | FR-CLI-24 | Checked by hand: `gantry logs -f` follows and `gantry -f FILE ps` reads FILE, in a debug build (clap's debug checks) |
+| FR-TLS-01 | `pod_certificates` |
+| FR-TLS-02 to FR-TLS-05 | tls scenario (13 checks: issue at `up`, `ps`, full chain and leaf name, owner and mode, the service reads its key, a second service gets only the root, a credential change mints in place and signals the service, a current certificate is left alone, issuer problems reported, near-end warning, `down` removes it); `due_and_expired` |
 | FR-ST-08 | `registry_round_trip` (options recorded, kept by a plain register, isolated load ignores a variable set in the boot environment, unreadable entry stops the project) |
 | FR-CMP-14 | `isolated_env_ignores_the_process_environment` |
 | FR-CLI-21 | `net_dev`, `rates_from_two_samples`, `units`; e2e (stats table and JSON, pod network once); checked by hand with a kiri container and a CPU limited container (throttling at 100%) |

@@ -1,6 +1,6 @@
 # Pod Certificates (proposal)
 
-Status: accepted 2026-11-27. The CA side (`gantry-hosts-enroll` and
+Status: accepted 2026-11-27. Gantry's side is built (`src/tls.rs`); the gantry-stepca issuer is next. The CA side (`gantry-hosts-enroll` and
 `gantry-hosts` on infraca) is in production for Gantry Hosts.
 
 ## Goals

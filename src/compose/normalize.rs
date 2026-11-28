@@ -155,6 +155,10 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
             priority: p.priority.unwrap_or(DEFAULT_PRIORITY),
             firewall: Some(firewall(&pod_name, p.firewall.unwrap_or_default())?),
             implicit: false,
+            tls: p
+                .tls
+                .map(|t| pod_tls(t).map_err(|e| Error::config(format!("pod {pod_name}: tls: {e}"))))
+                .transpose()?,
             name: pod_name.clone(),
         };
         pods.insert(pod_name, pod);
@@ -392,6 +396,15 @@ pub fn normalize(f: raw::File, ctx: &Ctx<'_>) -> Result<(Project, Vec<String>)> 
         .map(|(name, v)| Ok((name.clone(), project_plugin(&name, v)?)))
         .collect::<Result<_>>()?;
 
+    for s in services.values() {
+        if s.tls.is_some() && pods.get(&s.pod).is_none_or(|p| p.tls.is_none()) {
+            return Err(Error::config(format!(
+                "service {}: tls: pod {} has no tls: section to issue its certificate",
+                s.name, s.pod
+            )));
+        }
+    }
+
     let mut project = Project {
         name,
         dir: ctx.project_dir.clone(),
@@ -553,7 +566,191 @@ fn loopback_pod(name: &str) -> Pod {
         priority: DEFAULT_PRIORITY,
         firewall: None,
         implicit: true,
+        tls: None,
     }
+}
+
+/// `pod.tls`.
+fn pod_tls(t: raw::PodTls) -> std::result::Result<PodTls, String> {
+    let names: Vec<String> = t
+        .names
+        .unwrap_or_default()
+        .into_iter()
+        .map(|n| n.trim().to_ascii_lowercase())
+        .collect();
+    if names.is_empty() {
+        return Err("names is required: the DNS names the certificate carries".into());
+    }
+    for n in &names {
+        if !is_dns_name(n) || !n.contains('.') {
+            return Err(format!("{n:?} is not a fully qualified DNS name"));
+        }
+    }
+    let key_type = match t.key_type.as_deref() {
+        None | Some("ec256") => KeyType::Ec256,
+        Some("rsa2048") => KeyType::Rsa2048,
+        Some("rsa4096") => KeyType::Rsa4096,
+        Some(k) => return Err(format!("key_type {k:?} (ec256, rsa2048, rsa4096)")),
+    };
+    Ok(PodTls {
+        names,
+        key_type,
+        optional: t.optional.unwrap_or(false),
+        issuer: t.issuer,
+    })
+}
+
+/// The files a service gets without `files:`, as certbot lays them out.
+const DEFAULT_TLS_FILES: [(&str, TlsContent); 5] = [
+    ("cert.pem", TlsContent::Cert),
+    ("chain.pem", TlsContent::Chain),
+    ("fullchain.pem", TlsContent::Fullchain),
+    ("key.pem", TlsContent::Key),
+    ("ca.pem", TlsContent::Root),
+];
+
+/// A service's `tls`. `user` is the service's `user:`, whose numeric uid
+/// and gid own the files unless `owner:` says otherwise.
+fn service_tls(t: raw::ServiceTls, user: Option<&str>) -> std::result::Result<ServiceTls, String> {
+    let dir = t.dir.unwrap_or_else(|| "/etc/tls".into());
+    if !dir.starts_with('/') || dir.contains("..") || !safe_text(&dir, 255) {
+        return Err(format!("dir {dir:?} must be an absolute path"));
+    }
+    let on_renew = match t.on_renew {
+        None => {
+            return Err(
+                "on_renew is required: { signal: SIGHUP }, { exec: [...] }, restart, or none"
+                    .into(),
+            );
+        }
+        Some(raw::OnRenew::Word(w)) if w == "restart" => OnRenew::Restart,
+        Some(raw::OnRenew::Word(w)) if w == "none" => OnRenew::None,
+        Some(raw::OnRenew::Word(w)) => {
+            return Err(format!(
+                "on_renew {w:?} (restart, none, {{ signal }}, {{ exec }})"
+            ));
+        }
+        Some(raw::OnRenew::Signal { signal }) => {
+            let ok = !signal.is_empty()
+                && signal.len() <= 16
+                && signal
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '+');
+            if !ok {
+                return Err(format!("on_renew signal {signal:?}"));
+            }
+            OnRenew::Signal(signal)
+        }
+        Some(raw::OnRenew::Exec { exec }) => {
+            if exec.is_empty() {
+                return Err("on_renew exec needs a command".into());
+            }
+            OnRenew::Exec(exec)
+        }
+    };
+    let mut files = IndexMap::new();
+    match t.files {
+        None => {
+            for (name, content) in DEFAULT_TLS_FILES {
+                files.insert(
+                    name.to_string(),
+                    TlsFile {
+                        content,
+                        format: TlsFormat::Pem,
+                        password: None,
+                    },
+                );
+            }
+        }
+        Some(map) => {
+            if map.is_empty() {
+                return Err("files is empty".into());
+            }
+            for (name, spec) in map {
+                if name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.contains('/')
+                    || !safe_text(&name, 128)
+                {
+                    return Err(format!("file name {name:?}"));
+                }
+                let f = tls_file(&name, spec)?;
+                files.insert(name, f);
+            }
+        }
+    }
+    let parse_ids = |s: &str| -> Option<(u32, u32)> {
+        let (u, g) = s.split_once(':').unwrap_or((s, s));
+        Some((u.parse().ok()?, g.parse().ok()?))
+    };
+    let owner = match t.owner.map(raw::Scalar::into_string) {
+        Some(o) => parse_ids(&o).ok_or_else(|| format!("owner {o:?} must be uid or uid:gid"))?,
+        None => user.and_then(parse_ids).unwrap_or((0, 0)),
+    };
+    Ok(ServiceTls {
+        dir,
+        files,
+        owner,
+        on_renew,
+    })
+}
+
+fn tls_file(name: &str, spec: raw::TlsFile) -> std::result::Result<TlsFile, String> {
+    let (content, format, password) = match spec {
+        raw::TlsFile::Content(c) => (Some(c), None, None),
+        raw::TlsFile::Long {
+            content,
+            format,
+            password,
+        } => (content, format, password),
+    };
+    let format = match format.as_deref() {
+        None | Some("pem") => TlsFormat::Pem,
+        Some("der") => TlsFormat::Der,
+        Some("pkcs12") => TlsFormat::Pkcs12,
+        Some(f) => return Err(format!("{name}: format {f:?} (pem, der, pkcs12)")),
+    };
+    let content = match (content.as_deref(), format) {
+        // A PKCS#12 file holds the key and the full chain.
+        (None, TlsFormat::Pkcs12) => TlsContent::Bundle,
+        (None, _) => return Err(format!("{name}: content is required")),
+        (Some(c), _) => match c {
+            "cert" => TlsContent::Cert,
+            "chain" => TlsContent::Chain,
+            "fullchain" => TlsContent::Fullchain,
+            "key" => TlsContent::Key,
+            "key-pkcs1" => TlsContent::KeyPkcs1,
+            "root" => TlsContent::Root,
+            "bundle" => TlsContent::Bundle,
+            c => {
+                return Err(format!(
+                    "{name}: content {c:?} (cert, chain, fullchain, key, key-pkcs1, root, bundle)"
+                ));
+            }
+        },
+    };
+    if format == TlsFormat::Der
+        && !matches!(
+            content,
+            TlsContent::Cert | TlsContent::Root | TlsContent::Key | TlsContent::KeyPkcs1
+        )
+    {
+        return Err(format!(
+            "{name}: der holds one certificate or key (cert, root, key, key-pkcs1)"
+        ));
+    }
+    if format == TlsFormat::Pkcs12 && password.is_none() {
+        return Err(format!("{name}: pkcs12 needs a password"));
+    }
+    if format != TlsFormat::Pkcs12 && password.is_some() {
+        return Err(format!("{name}: password is only for pkcs12"));
+    }
+    Ok(TlsFile {
+        content,
+        format,
+        password,
+    })
 }
 
 /// The first usable host of an IPv4 subnet, the default gateway. A /31 or
@@ -1086,6 +1283,7 @@ fn service(
         (None, None) => project_runtime,
     };
 
+    let user = s.user.map(raw::Scalar::into_string);
     let mut environment = IndexMap::new();
     let env_files: Vec<(String, bool)> = match s.env_file {
         None => vec![],
@@ -1321,7 +1519,11 @@ fn service(
         entrypoint: split(s.entrypoint, "entrypoint")?,
         environment,
         working_dir: s.working_dir,
-        user: s.user.map(raw::Scalar::into_string),
+        tls: s
+            .tls
+            .map(|t| service_tls(t, user.as_deref()).map_err(|e| err(format!("tls: {e}"))))
+            .transpose()?,
+        user,
         labels,
         mounts,
         priority: s.priority.unwrap_or(DEFAULT_PRIORITY),
@@ -1776,6 +1978,88 @@ mod tests {
         assert_eq!(b.ifname, "mgmt");
         assert_eq!(b.addressing, Addressing::Dhcp);
         assert!(b.default_route);
+    }
+
+    #[test]
+    fn pod_certificates() {
+        let base = "name: t\npod:\n  tls: { names: [Shop.infra.invite.global], key_type: rsa2048 }\nservices:\n";
+        let p = try_load(&format!(
+            "{base}  web:\n    image: x\n    user: \"101:102\"\n    tls: {{ on_renew: {{ signal: SIGHUP }} }}\n  api:\n    image: x\n    tls:\n      dir: /app/certs\n      owner: 1000\n      on_renew: {{ exec: [kill, -USR2, '1'] }}\n      files:\n        tls.crt: fullchain\n        tls.key: key\n        ca.der: {{ content: root, format: der }}\n        store.p12: {{ format: pkcs12, password: secret }}\n  plain: {{ image: x }}\n"
+        ))
+        .unwrap();
+        let tls = p.pods["t"].tls.as_ref().unwrap();
+        assert_eq!(tls.names, ["shop.infra.invite.global"]);
+        assert_eq!(tls.key_type, KeyType::Rsa2048);
+
+        let web = p.services["web"].tls.as_ref().unwrap();
+        assert_eq!(web.dir, "/etc/tls");
+        assert_eq!(web.owner, (101, 102));
+        assert_eq!(web.on_renew, OnRenew::Signal("SIGHUP".into()));
+        let names: Vec<&str> = web.files.keys().map(String::as_str).collect();
+        assert_eq!(
+            names,
+            [
+                "cert.pem",
+                "chain.pem",
+                "fullchain.pem",
+                "key.pem",
+                "ca.pem"
+            ]
+        );
+        assert_eq!(web.files["cert.pem"].content, TlsContent::Cert);
+
+        let api = p.services["api"].tls.as_ref().unwrap();
+        assert_eq!(api.owner, (1000, 1000));
+        assert_eq!(api.files["store.p12"].content, TlsContent::Bundle);
+        assert_eq!(api.files["ca.der"].format, TlsFormat::Der);
+        assert!(p.services["plain"].tls.is_none());
+
+        for (bad, why) in [
+            ("  a: { image: x, tls: {} }\n", "on_renew is required"),
+            (
+                "  a: { image: x, tls: { on_renew: reload } }\n",
+                "on_renew \"reload\"",
+            ),
+            (
+                "  a: { image: x, tls: { on_renew: none, dir: etc/tls } }\n",
+                "absolute",
+            ),
+            (
+                "  a: { image: x, tls: { on_renew: none, files: { ../k: key } } }\n",
+                "file name",
+            ),
+            (
+                "  a: { image: x, tls: { on_renew: none, files: { k: { format: pkcs12 } } } }\n",
+                "password",
+            ),
+            (
+                "  a: { image: x, tls: { on_renew: none, files: { k: { content: chain, format: der } } } }\n",
+                "der holds one",
+            ),
+            (
+                "  a: { image: x, tls: { on_renew: none, owner: www } }\n",
+                "owner",
+            ),
+        ] {
+            let e = try_load(&format!("{base}{bad}")).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        for (pod, why) in [
+            ("  tls: {}\n", "names is required"),
+            ("  tls: { names: [shop] }\n", "fully qualified"),
+            ("  tls: { names: [a.b], key_type: ed25519 }\n", "key_type"),
+        ] {
+            let e = try_load(&format!("name: t\npod:\n{pod}services: {{}}\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(why), "{pod}: {e}");
+        }
+        let e = try_load(
+            "name: t\nservices:\n  a: { image: x, network_mode: none, tls: { on_renew: none } }\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("has no tls"), "{e}");
     }
 
     #[test]

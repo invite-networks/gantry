@@ -1,0 +1,26 @@
+# Pod certificate scenario: a test issuer (issuer/) signs the pod's
+# certificate, and two services take it in different layouts.
+name: gttls
+
+pod:
+  network: []
+  tls: { names: [gttls.infra.invite.global] }
+
+services:
+  web:
+    image: busybox:1.37
+    user: "1060:1060"
+    command: [sh, -c, "trap 'echo hup >> /tmp/hup' HUP; while :; do sleep 1; done"]
+    stop_grace_period: 1s
+    tls:
+      dir: /secrets
+      files: { chain.pem: fullchain, key.pem: key }
+      on_renew: { signal: HUP }
+  side:
+    image: busybox:1.37
+    command: [sleep, "3600"]
+    stop_grace_period: 1s
+    tls:
+      dir: /ca
+      files: { backend-ca.pem: root }
+      on_renew: none

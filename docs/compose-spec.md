@@ -37,6 +37,56 @@ from the environment first, then from `.env` in the project directory (or
 A top-level `networks:` section is an error. Each pod defines its own
 interfaces (see below).
 
+## tls (extension)
+
+A pod can have a certificate from an issuer plugin (such as gantry-stepca),
+issued when it is created and refreshed before it runs out. Each service
+that wants it says where its files go, what they hold, and what to do when
+they change. The full design is [docs/spec/certificates.md](spec/certificates.md).
+
+```yaml
+pod:
+  tls:
+    names: [shop.infra.invite.global]   # required: the DNS names it carries
+    key_type: ec256                     # ec256 (default), rsa2048, rsa4096
+    optional: false                     # true: start without one and keep trying
+    # issuer: stepca                    # when more than one issuer is installed
+
+services:
+  web:
+    user: "1060:1060"                   # numeric user: owns the files by default
+    tls:
+      dir: /secrets                     # default /etc/tls, mounted read only
+      files:                            # default: cert.pem chain.pem fullchain.pem key.pem ca.pem
+        chain.pem: fullchain
+        key.pem: key
+        ca.der: { content: root, format: der }
+        store.p12: { format: pkcs12, password: "${STORE_PASSWORD}" }
+      # owner: "1060:1060"
+      on_renew: { signal: SIGHUP }      # required: { signal }, { exec: [...] }, restart, none
+```
+
+| Content | Holds |
+|---|---|
+| `cert` | the certificate alone |
+| `chain` | the intermediates |
+| `fullchain` | certificate and intermediates |
+| `key` | private key, PKCS#8 PEM |
+| `key-pkcs1` | private key in the older RSA or EC form |
+| `root` | the CA root |
+| `bundle` | key and full chain in one file |
+
+Files holding the key are mode 0400, the others 0444, owned by `owner:` or
+the service's numeric `user:`. `der` is for one certificate or key, and
+`pkcs12` (key and full chain) needs `password:`. A service with `tls:` must
+be in a pod with `tls:`.
+
+The files live in memory under `/run/gantry`, never with the project, so a
+project moved to another host gets its certificate there. `gantry ps` shows
+each pod's certificate and warns when one is missing or within 4 hours of
+its end. `gantry supervise` (or gantry-agent) refreshes certificates and
+reports problems; `gantry internal tls-watch --once` runs one pass by hand.
+
 ## plugins (extension)
 
 Every plugin installed on the host runs for every project unless the

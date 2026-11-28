@@ -356,6 +356,12 @@ impl Orchestrator {
             .collect();
         let all = self.containers().await?;
         let states = self.ensure_pods(&pods, &all).await?;
+        // Certificates before containers: their files are mounted in.
+        for name in &pods {
+            if let Some(pod) = self.project.pods.get(name) {
+                crate::tls::ensure(self, pod).await?;
+            }
+        }
         let existing: Vec<(Engine, ContainerInfo)> =
             all.into_iter().filter(|(_, c)| !c.oneoff).collect();
 

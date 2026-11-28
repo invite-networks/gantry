@@ -1,0 +1,8 @@
+api = 1
+name = "testca"
+version = "0.0.0"
+exec = ["run"]
+
+[certificate]
+from = "testca"
+timeout = "30s"

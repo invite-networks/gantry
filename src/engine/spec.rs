@@ -198,6 +198,10 @@ pub fn create_spec(
             }
         }
     }
+    if let Some(t) = &svc.tls {
+        let src = crate::tls::service_dir(&pod.project, &pod.name, &svc.name);
+        binds.push(format!("{}:{}:ro", src.display(), t.dir));
+    }
     host.binds = Some(binds);
     if !anon.is_empty() {
         body.volumes = Some(anon);
