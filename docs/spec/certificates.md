@@ -1,7 +1,7 @@
 # Pod Certificates (proposal)
 
 Status: proposal for review. The CA side (`gantry-hosts-enroll` and
-`gantry-hosts` on infraca) is built and tested but not yet in production.
+`gantry-hosts` on infraca) is in production for Gantry Hosts.
 
 ## Goals
 
@@ -29,10 +29,10 @@ Nautobot role is "Gantry Host":
 | | |
 |---|---|
 | CA | `https://infraca.infra.invite.global` |
-| Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), client authentication only, SAN `<host>.infra.invite.global`, 90 days |
+| Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), client authentication only, SAN `<host>.infra.invite.global`, 24 hours |
 | Key | `/etc/ssl/private/gantry-credential.key`, root only, 0600 |
 | CA root | `/usr/local/share/ca-certificates/infraca-root.crt` |
-| Renewal | `step-renew-gantry.timer` runs `step ca renew`, and the next run of `playbooks/gantry-hosts.yml` reissues a lapsed credential |
+| Renewal | `step-renew-gantry.timer` renews it at about 16 hours, then runs the hooks in `/etc/step-renew.d`. The next run of `playbooks/gantry-hosts.yml` reissues a lapsed credential |
 
 Gantry asks the X5C provisioner `gantry-hosts` for the pod's certificate,
 signed with the credential, the equivalent of:
@@ -46,9 +46,17 @@ step ca certificate app.infra.invite.global pod.crt pod.key \
 
 That provisioner accepts only credentials issued by `gantry-hosts-enroll`,
 refusing ordinary host certificates and pod certificates alike, and issues
-DNS names only, for 720 hours. **Renewal does not use the credential:** a pod
-certificate is renewed with itself over mutual TLS (`step ca renew`), so a
-running pod keeps its certificate even if its host's credential lapses.
+DNS names only. A pod certificate lasts **24 hours at most, and never past
+the credential's own expiry**: one minted when the credential has 3 hours
+left lasts 3 hours. Renewing a pod certificate (`step ca renew --force` over
+mutual TLS with the pod certificate itself) keeps its original length, and a
+certificate that has expired cannot be renewed at all.
+
+So gantry mints rather than renews. Each time the credential is renewed, the
+hook gantry installs in `/etc/step-renew.d` tells the watcher, and every pod
+certificate is minted again from the fresh credential, getting close to a
+full 24 hours. Renewal with the pod's own certificate is kept only as the
+fallback when the credential is unusable.
 
 The ordinary host certificate (`/etc/ssl/host/`) is never used: its key is
 readable by the `ssl-cert` group, and every Linux host has one.
@@ -154,16 +162,31 @@ Key material (`key`, `key-pkcs1`, `bundle`, `pkcs12`) is mode 0400, the rest
    read-only at `dir`. Gantry mounts the directory, not single files, so a
    renewed file replaced by rename is seen in the container. A file mount
    would keep the old copy.
-4. **Renew.** The watcher that already acts on health (`gantry supervise`, or
-   gantry-agent through the library) renews a certificate at two thirds of
-   its lifetime with the certificate itself, re-renders every service's files
-   at once, and runs each service's `on_renew`. A failed renewal keeps the
-   current certificate, warns, and retries with backoff. A certificate that
-   has expired cannot renew itself, so gantry issues a new one with the
-   credential, as at creation.
-5. **Show.** `gantry ps` and `gantry stats` show each pod's certificate
-   expiry, and plugins get it in their event data, so monitoring can alert
-   before a certificate runs out.
+4. **Refresh.** The watcher that already acts on health (`gantry supervise`,
+   or gantry-agent through the library) mints a new certificate when the
+   credential's hook fires, and in any case once a certificate is past two
+   thirds of its lifetime. If minting fails, it renews with the pod's own
+   certificate instead, and then keeps trying to mint. Each refresh
+   re-renders every service's files at once and runs each service's
+   `on_renew`. A failure keeps the current certificate and retries with
+   backoff.
+5. **Report.** Problems are reported, not only logged (see Reporting).
+   `gantry ps` and `gantry stats` show each pod's certificate expiry, and
+   plugins get it in their event data.
+
+## Reporting
+
+The CA's owner asked for these to be loud. Each one is an error in the
+watcher's journal, a warning on every `gantry` command that touches the
+project (`up`, `ps`, `stats`), and a `tls_problem` plugin event, so
+gantry-agent can raise it in Gantry Server:
+
+| Problem | Meaning |
+|---|---|
+| Credential missing, expired, or expiring within 4 hours | Ansible's timer or the CA path is broken. |
+| Mint or renew refused or failed | With the CA's own error text, such as "dns name ... not allowed". |
+| Pod certificate expiring within 4 hours, or expired while the pod runs | Refresh is not keeping up. |
+| CA unreachable | `https://infraca.infra.invite.global/health` did not answer. |
 
 ## Issuer Plugin
 
@@ -174,7 +197,7 @@ plugin declares `[certificate] from = "stepca"` in its manifest and answers
 ```json
 { "type": "sign", "id": 7, "data": { "project": "shop", "pod": "web",
   "csr": "-----BEGIN CERTIFICATE REQUEST-----...", "names": ["web.infra.invite.global"],
-  "lifetime_hours": 720 } }
+  "lifetime_hours": 24 } }
 ```
 
 The answer carries the certificate, the chain and the root, in PEM. A
@@ -192,8 +215,8 @@ must name one (`tls: { issuer: stepca }`).
   a new certificate from that host's credential. The old host's copy goes
   with its pod.
 - **Down.** `gantry down` removes the key and certificate with the pod's
-  directory. The certificate stays valid at the CA until it expires (up to
-  30 days). Revocation at `down` can be added if that window matters.
+  directory. The certificate stays valid at the CA until it expires, within
+  24 hours, so revocation is not needed.
 
 ## Security Notes
 
@@ -201,17 +224,18 @@ must name one (`tls: { issuer: stepca }`).
   certificate, so it is root only and used only by the issuer plugin. Gantry
   never mounts it into a container.
 - step-ca does not check whether an X5C credential has been revoked. A stolen
-  credential keeps minting certificates until it expires (90 days now). A
-  shorter credential lifetime, with Ansible or a timer renewing it more often,
-  narrows that window. That is a decision for the CA's owner.
+  credential keeps minting certificates until it expires, which the 24 hour
+  lifetime keeps short.
 - A pod certificate cannot mint others: `gantry-hosts` refuses it as a
   credential.
 
 ## Open Questions
 
-1. Should `on_renew` default to `restart`, which always works but costs a
-   restart every 20 days, or to `none`, which is free but silently wrong for
-   software that does not reload its certificates?
+1. Should `on_renew` default to `restart`, which always works but restarts
+   every service with a certificate about once a day, or to `none`, which is
+   free but silently wrong for software that does not reload its
+   certificates? With 24 hour certificates, `restart` as a default looks
+   costly. A required `on_renew` (no default) is a third option.
 2. Is the full chain or the leaf alone the right default for `cert.pem`?
    Full chain suits servers. Some clients want the leaf alone.
 3. Does any service need the certificate before its pod exists, for example
