@@ -359,8 +359,8 @@ enum InternalCmd {
     /// Tell the certificate watcher the issuer's credential changed, so it
     /// mints every pod certificate again (run by the credential hook)
     TlsRefresh,
-    /// Run the pod certificate watcher alone (as `supervise` does), or one
-    /// pass of it with --once
+    /// Run the pod certificate watcher (gantry-tls.service), or one pass
+    /// of it with --once
     TlsWatch {
         #[arg(long)]
         once: bool,
@@ -567,9 +567,27 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Internal(InternalCmd::TlsWatch { once }) => {
             require_root()?;
             if once {
+                // One pass by hand, beside a running watcher too: the
+                // project locks keep the two from colliding.
                 gantry::tls::pass(true, &mut Default::default()).await;
             } else {
-                gantry::tls::watch(tokio_util::sync::CancellationToken::new()).await?;
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let stop = cancel.clone();
+                tokio::spawn(async move {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let (Ok(mut term), Ok(mut int)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    stop.cancel();
+                });
+                gantry::tls::watch(cancel).await?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -862,19 +880,14 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 }
                 stop.cancel();
             });
-            // Health and pod certificates, side by side until a signal.
-            let (heal, tls) = tokio::join!(
-                gantry::heal::watch(
-                    &[RuntimeKind::Docker, RuntimeKind::Kiri],
-                    gantry::heal::Policy::default(),
-                    gantry::heal::Control::default(),
-                    None,
-                    cancel.clone(),
-                ),
-                gantry::tls::watch(cancel),
-            );
-            heal?;
-            tls?;
+            gantry::heal::watch(
+                &[RuntimeKind::Docker, RuntimeKind::Kiri],
+                gantry::heal::Policy::default(),
+                gantry::heal::Control::default(),
+                None,
+                cancel,
+            )
+            .await?;
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Start { services } => {

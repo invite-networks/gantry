@@ -84,8 +84,9 @@ be in a pod with `tls:`.
 The files live in memory under `/run/gantry`, never with the project, so a
 project moved to another host gets its certificate there. `gantry ps` shows
 each pod's certificate and warns when one is missing or within 4 hours of
-its end. `gantry supervise` (or gantry-agent) refreshes certificates and
-reports problems; `gantry internal tls-watch --once` runs one pass by hand.
+its end. `gantry-tls.service`, enabled by the package, refreshes
+certificates and reports problems on every host, whatever runs the health
+watcher. `gantry internal tls-watch --once` runs one pass by hand.
 
 ## plugins (extension)
 

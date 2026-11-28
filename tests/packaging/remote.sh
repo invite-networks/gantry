@@ -93,6 +93,7 @@ chmod 750 /mnt/container-local; dpkg-reconfigure gantry >/dev/null 2>&1
 # Boot: the package ships gantry-boot.service and enables it.
 [ -f /lib/systemd/system/gantry-boot.service ] || [ -f /usr/lib/systemd/system/gantry-boot.service ] && ok "gantry-boot.service installed" || bad "no gantry-boot.service"
 [ -L /etc/systemd/system/multi-user.target.wants/gantry-boot.service ] && ok "gantry-boot.service enabled" || bad "gantry-boot.service not enabled"
+[ -L /etc/systemd/system/multi-user.target.wants/gantry-tls.service ] && ok "gantry-tls.service enabled" || bad "gantry-tls.service not enabled"
 
 # Direct sudo for anything else must fail.
 su -s /bin/sh gantry-remote -c 'sudo -n /usr/bin/gantry version' >/dev/null 2>&1 && bad "sudo gantry directly" || ok "no direct sudo gantry"

@@ -83,6 +83,7 @@ assets = [
     ["target/release/gantry-oci", "usr/bin/", "755"],
     ["contrib/systemd/gantry-boot.service", "lib/systemd/system/", "644"],
     ["contrib/systemd/gantry-supervise.service", "lib/systemd/system/", "644"],
+    ["contrib/systemd/gantry-tls.service", "lib/systemd/system/", "644"],
     ["contrib/project-dirs", "etc/gantry/project-dirs", "644"],
     ["contrib/remote/gantry-run", "usr/libexec/gantry/", "755"],
     ["contrib/remote/gantry-ssh", "usr/libexec/gantry/", "755"],

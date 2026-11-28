@@ -333,6 +333,35 @@ pub async fn report(o: &Orchestrator, pod: Option<&str>, message: &str) {
     .await;
 }
 
+/// One certificate watcher per host holds this.
+pub fn lock_path() -> PathBuf {
+    state::run_dir().join("tls.lock")
+}
+
+/// Held by the running certificate watcher.
+pub struct HostLock(#[allow(dead_code)] nix::fcntl::Flock<std::fs::File>);
+
+/// Takes the host's certificate watcher lock, or fails when another
+/// watcher (gantry-tls.service, or a library caller) holds it.
+pub fn host_lock() -> Result<HostLock> {
+    state::ensure_dir(&state::run_dir())?;
+    let path = lock_path();
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .ctx(|| format!("open {}", path.display()))?;
+    match nix::fcntl::Flock::lock(f, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+        Ok(l) => Ok(HostLock(l)),
+        Err((_, nix::Error::EWOULDBLOCK)) => Err(Error::State(format!(
+            "another certificate watcher is running on this host ({} is locked)",
+            path.display()
+        ))),
+        Err((_, e)) => Err(e).ctx(|| format!("lock {}", path.display())),
+    }
+}
+
 /// The file the credential hook touches: `gantry internal tls-refresh`.
 pub fn trigger_path() -> PathBuf {
     state::run_dir().join("tls-refresh")
@@ -458,6 +487,8 @@ const REPEAT: Duration = Duration::from_secs(1800);
 /// running half of pod certificates, run by `gantry supervise` and by
 /// library callers such as gantry-agent.
 pub async fn watch(cancel: tokio_util::sync::CancellationToken) -> Result<()> {
+    let _host = host_lock()?;
+    tracing::info!("certificate watcher started");
     let mut last_status = std::time::Instant::now() - STATUS_EVERY;
     let mut reported: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
