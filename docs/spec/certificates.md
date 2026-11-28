@@ -32,7 +32,7 @@ Nautobot role is "Gantry Host":
 | Credential | `/etc/ssl/gantry/credential.crt` (leaf and chain), client authentication only, SAN `<host>.infra.invite.global`, 24 hours |
 | Key | `/etc/ssl/private/gantry-credential.key`, root only, 0600 |
 | CA root | `/usr/local/share/ca-certificates/infraca-root.crt` |
-| Renewal | `step-renew-gantry.timer` renews it at about 16 hours, then runs the hooks in `/etc/step-renew.d`. The next run of `playbooks/gantry-hosts.yml` reissues a lapsed credential |
+| Renewal | `step-renew-gantry.timer` checks every 15 minutes and renews it past about 16 hours, then runs the hooks in `/etc/step-renew-gantry.d`, as Ansible does after reissuing a lapsed credential. The next run of `playbooks/gantry-hosts.yml` reissues a lapsed credential |
 
 Gantry asks the X5C provisioner `gantry-hosts` for the pod's certificate,
 signed with the credential, the equivalent of:
@@ -52,10 +52,12 @@ left lasts 3 hours. Renewing a pod certificate (`step ca renew --force` over
 mutual TLS with the pod certificate itself) keeps its original length, and a
 certificate that has expired cannot be renewed at all.
 
-So gantry mints rather than renews. Each time the credential is renewed, the
-hook gantry installs in `/etc/step-renew.d` tells the watcher, and every pod
+So gantry mints rather than renews. Each time the credential changes, the
+hook `/etc/step-renew-gantry.d/gantry` (shipped by the gantry-stepca package,
+no dots in the name as run-parts requires) tells the watcher, and every pod
 certificate is minted again from the fresh credential, getting close to a
-full 24 hours. Renewal with the pod's own certificate is kept only as the
+full 24 hours. The hook only signals the watcher and exits at once, so a
+slow or absent gantry never holds up the credential timer. Renewal with the pod's own certificate is kept only as the
 fallback when the credential is unusable.
 
 The ordinary host certificate (`/etc/ssl/host/`) is never used: its key is
