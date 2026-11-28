@@ -429,6 +429,30 @@ lifecycle events and asks for pod addresses. The reference is
   the pod. Hosts files and firewalls already read live addresses from pod
   state, as for DHCP, so nothing else changes [FR-ADDR-07].
 
+### 6.10 Pod certificates
+
+The full design is [certificates.md](certificates.md). How it is built:
+
+* **Issuer.** `Plugins::certificate` sends `issue`, `renew` or `status` to
+  the plugin whose manifest has `[certificate]`, chosen by `tls.issuer` or
+  as the only one installed. The plugin makes the key, so gantry holds no
+  cryptography beyond calling `openssl` for the PKCS#1 key form, DER and
+  PKCS#12 [FR-TLS-02, FR-TLS-03].
+* **State.** `issued.json` (key, certificate, chain, root, issue time and
+  end) sits in the pod's directory in `/run/gantry`, mode 0600, and goes
+  when the pod is removed. Each service's files are rendered into
+  `tls/svc/<service>/`, written beside and renamed over, so a mounted
+  directory never shows half a file. Mounting the directory, not the files,
+  is what lets a container see renewals.
+* **Not part of the pod's shape.** `tls` is cleared before the pod's
+  configuration hash, so certificates change without a new pod, and pods
+  without `tls` keep the hash they had [FR-TLS-01].
+* **Refresh.** `tls::pass` takes each project's lock without waiting, so a
+  running command wins. `gantry internal tls-refresh` writes the time to
+  `/run/gantry/tls-refresh`. A certificate issued before that time is minted
+  again, which is how a renewed issuer credential reaches every pod
+  [FR-TLS-04].
+
 ## 7. Data flows
 
 ### 7.1 `gantry up`
