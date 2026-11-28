@@ -1,12 +1,14 @@
-# Watches Docker and kiri for containers that turn unhealthy and act on
-# the ones whose service sets `health_on_failure: restart` or `stop`.
-# Engines only mark such containers; restart policies cover exits only.
+# The host's long running watcher. Health: acts on containers that turn
+# unhealthy whose service sets `health_on_failure: restart` or `stop`
+# (engines only mark them; restart policies cover exits only). Pod
+# certificates: mints them again before they run out or when the issuer's
+# credential is renewed, and reports problems.
 #
-# One watcher runs per host (it holds /run/gantry/heal.lock). gantry-agent
-# runs the same watcher itself; it takes over with
+# One of each runs per host (/run/gantry/heal.lock, /run/gantry/tls.lock).
+# gantry-agent runs both itself; it takes over with
 # `systemctl disable --now gantry-supervise.service`.
 [Unit]
-Description=Gantry health watcher
+Description=Gantry health and certificate watcher
 After=docker.service kiri.service gantry-boot.service
 
 [Service]

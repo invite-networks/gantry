@@ -447,10 +447,11 @@ The full design is [certificates.md](certificates.md). How it is built:
 * **Not part of the pod's shape.** `tls` is cleared before the pod's
   configuration hash, so certificates change without a new pod, and pods
   without `tls` keep the hash they had [FR-TLS-01].
-* **Refresh.** `gantry-tls.service` runs `tls::watch`, which holds
-  `/run/gantry/tls.lock`, so one watcher runs per host. It is its own unit,
-  not part of `gantry supervise`, so a host whose health watcher is
-  gantry-agent still refreshes certificates. `tls::pass` takes each
+* **Refresh.** The host's long running watcher runs `tls::watch` beside
+  the health watcher: `gantry supervise`, or gantry-agent, which disables
+  supervise when it takes over and then runs both. `tls::watch` holds
+  `/run/gantry/tls.lock`, so one runs per host, and supervise keeps either
+  half running when the other's lock is taken. `tls::pass` takes each
   project's lock without waiting, so a running command wins. `gantry internal tls-refresh` writes the time to
   `/run/gantry/tls-refresh`. A certificate issued before that time is minted
   again, which is how a renewed issuer credential reaches every pod

@@ -171,8 +171,8 @@ day, so the choice is made per service, never by default.
    read-only at `dir`. Gantry mounts the directory, not single files, so a
    renewed file replaced by rename is seen in the container. A file mount
    would keep the old copy.
-4. **Refresh.** `gantry-tls.service` (one per host, enabled by the package,
-   separate from the health watcher) mints a new certificate when the
+4. **Refresh.** The host's long running watcher (`gantry supervise`, or
+   gantry-agent through the library, one per host by a lock) mints a new certificate when the
    credential's hook fires, and in any case once a certificate is past two
    thirds of its lifetime. If minting fails, it renews with the pod's own
    certificate instead, and then keeps trying to mint. Each refresh

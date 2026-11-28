@@ -342,7 +342,7 @@ pub fn lock_path() -> PathBuf {
 pub struct HostLock(#[allow(dead_code)] nix::fcntl::Flock<std::fs::File>);
 
 /// Takes the host's certificate watcher lock, or fails when another
-/// watcher (gantry-tls.service, or a library caller) holds it.
+/// watcher (`gantry supervise`, or gantry-agent) holds it.
 pub fn host_lock() -> Result<HostLock> {
     state::ensure_dir(&state::run_dir())?;
     let path = lock_path();

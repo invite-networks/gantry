@@ -359,8 +359,8 @@ enum InternalCmd {
     /// Tell the certificate watcher the issuer's credential changed, so it
     /// mints every pod certificate again (run by the credential hook)
     TlsRefresh,
-    /// Run the pod certificate watcher (gantry-tls.service), or one pass
-    /// of it with --once
+    /// Run the pod certificate watcher alone, or one pass of it with
+    /// --once (it normally runs in `supervise` or gantry-agent)
     TlsWatch {
         #[arg(long)]
         once: bool,
@@ -880,15 +880,32 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 }
                 stop.cancel();
             });
-            gantry::heal::watch(
-                &[RuntimeKind::Docker, RuntimeKind::Kiri],
-                gantry::heal::Policy::default(),
-                gantry::heal::Control::default(),
-                None,
-                cancel,
-            )
-            .await?;
-            Ok(ExitCode::SUCCESS)
+            // The host's long running watcher: health and pod certificates,
+            // each under its own lock. When another watcher (gantry-agent)
+            // holds one, that half is left to it and the other keeps
+            // running.
+            let (heal, tls) = tokio::join!(
+                gantry::heal::watch(
+                    &[RuntimeKind::Docker, RuntimeKind::Kiri],
+                    gantry::heal::Policy::default(),
+                    gantry::heal::Control::default(),
+                    None,
+                    cancel.clone(),
+                ),
+                gantry::tls::watch(cancel),
+            );
+            let mut failed = 0;
+            for (what, r) in [("health watcher", heal), ("certificate watcher", tls)] {
+                if let Err(e) = r {
+                    tracing::warn!("{what}: {e}");
+                    failed += 1;
+                }
+            }
+            Ok(if failed == 2 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            })
         }
         Cmd::Start { services } => {
             require_root()?;

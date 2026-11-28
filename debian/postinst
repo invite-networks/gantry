@@ -71,21 +71,6 @@ if [ "$1" = configure ]; then
 		systemctl restart gantry-supervise.service >/dev/null 2>&1 || true
 	fi
 
-	# Pod certificate watcher: enabled on first install like the health
-	# watcher, an operator's disable kept across upgrades, and restarted so
-	# an upgrade runs the new code.
-	if command -v deb-systemd-helper >/dev/null 2>&1; then
-		if deb-systemd-helper --quiet was-enabled gantry-tls.service; then
-			deb-systemd-helper enable gantry-tls.service >/dev/null 2>&1 || true
-		else
-			deb-systemd-helper update-state gantry-tls.service >/dev/null 2>&1 || true
-		fi
-	fi
-	if [ -d /run/systemd/system ] &&
-		systemctl is-enabled --quiet gantry-tls.service 2>/dev/null; then
-		systemctl restart gantry-tls.service >/dev/null 2>&1 || true
-	fi
-
 	# Pick up /etc/ssh/sshd_config.d/gantry.conf.
 	if command -v sshd >/dev/null 2>&1; then
 		if sshd -t 2>/dev/null; then
